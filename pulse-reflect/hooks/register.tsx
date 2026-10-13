@@ -2,9 +2,11 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
 import type { Learning, SavedRule } from '../types'
+import { cardAlt, cardSvg, ENTER_MS } from './draw'
 
 const pending = atom({ plugin: 'pulse-reflect', key: 'pending' } as const, [])
 const savedThisSession = atom({ plugin: 'pulse-reflect', key: 'savedThisSession' } as const, [])
+const shownHead = atom({ plugin: 'pulse-reflect', key: 'shownHead' } as const, { id: '', since: 0 })
 
 /** Longer prompts are task briefs and pastes, not corrections (unless they say "remember:"). */
 const MAX_PROMPT = 500
@@ -12,7 +14,9 @@ const MAX_RULE = 200
 const MIN_CONFIDENCE = 0.7
 const MAX_ITEMS = 300
 const MAX_QUEUE = 20
-const BAND_ROWS = 2
+/** An Edit's scope carries over to the reworded rule sent within this long, when the two still look alike. */
+const EDIT_WINDOW_MS = 30 * 60 * 1000
+const EDIT_SAME = 0.3
 /** Two rules this alike (ordered word pairs) are the same rule. */
 const SAME = 0.6
 const START = '<!-- claude-reflect: learned rules (saved from the band; edit freely) -->'
@@ -38,6 +42,23 @@ let isDraining = false
 /** Saves to CLAUDE.md files run one after another inside this session. */
 let writing: Promise<unknown> = Promise.resolve()
 const queue: string[] = []
+
+/** Direct verbs for the two saves, by where each one writes; the repo save is always drawn first. */
+const SAVE_LABEL = { project: 'Save to this repo', global: 'Save globally' } as const
+const otherScope = (scope: Learning['scope']) => (scope === 'project' ? 'global' : 'project')
+/** Rows one terminal rule takes: its line (prefix, quotes and count included) and its buttons, two when they wrap. */
+const rowsFor = (learning: Learning, bodyColumns: number) => {
+  const columns = Math.max(1, bodyColumns)
+  return Math.ceil((14 + learning.rule.length) / columns) + (columns >= 66 ? 1 : 2)
+}
+
+type LastEdit = { rule: string; scope: Learning['scope']; at: number }
+const isLastEdit = (value: unknown): value is LastEdit =>
+  typeof value === 'object' &&
+  value !== null &&
+  typeof (value as LastEdit).rule === 'string' &&
+  ((value as LastEdit).scope === 'global' || (value as LastEdit).scope === 'project') &&
+  typeof (value as LastEdit).at === 'number'
 
 /** Ordered word pairs, short words kept: "pnpm, not npm" and "npm, not pnpm" share none. */
 export function pairs(s: string) {
@@ -160,7 +181,16 @@ async function refreshBand($: EngineInterface) {
   const mine = (await items($))
     .filter(l => l.status === 'pending' && (l.scope === 'global' || l.project === root))
     .sort((a, b) => b.count - a.count || b.lastAt - a.lastAt)
-  await update($, pending, () => mine)
+  // The rule at the head stays there while it waits, so a rule found later never slides in under a press.
+  let headId = ''
+  await update($, pending, previous => {
+    const pinned = mine.find(learning => learning.id === previous[0]?.id)
+    const ordered = pinned === undefined ? mine : [pinned, ...mine.filter(learning => learning !== pinned)]
+    headId = ordered[0]?.id ?? ''
+    return ordered
+  })
+  const now = await $.clock.now()
+  await update($, shownHead, head => (head.id === headId ? head : { id: headId, since: now }))
 }
 
 async function fileFor($: EngineInterface, scope: 'global' | 'project', root: string) {
@@ -229,7 +259,15 @@ async function checkOne($: EngineInterface, text: string) {
       $.ui.toast('reflect: not kept - one line, no secrets, at most 200 characters')
       return
     }
-    await record($, { isRule: true, rule, scope: 'global', confidence: 1 }, root, true)
+    // A reworded rule from Edit rule keeps the scope the check gave the original.
+    const lastEdit = await $.store.get('lastEdit')
+    let scope: Learning['scope'] = 'global'
+    if (lastEdit !== undefined) {
+      const now = await $.clock.now()
+      if (isLastEdit(lastEdit) && now - lastEdit.at < EDIT_WINDOW_MS && similarity(lastEdit.rule, rule) >= EDIT_SAME) scope = lastEdit.scope
+      await $.store.delete('lastEdit')
+    }
+    await record($, { isRule: true, rule, scope, confidence: 1 }, root, true)
     return
   }
   const r = await $.model.complete({
@@ -279,7 +317,11 @@ async function decide($: EngineInterface, id: string, status: Learning['status']
 async function saveTo($: EngineInterface, l: Learning, scope: 'global' | 'project') {
   const job = writing.then(async () => {
     const latest = (await items($)).find(one => one.id === l.id)
-    if (latest === undefined || latest.status !== 'pending') return
+    if (latest === undefined || latest.status !== 'pending') {
+      await refreshBand($)
+      $.ui.toast('reflect: this rule was already handled in another session')
+      return
+    }
     const root = await $.session.root()
     const path = await fileFor($, scope, root)
     const before = await readText($, path)
@@ -305,11 +347,13 @@ async function skip($: EngineInterface, l: Learning) {
 async function edit($: EngineInterface, l: Learning) {
   const box = await $.prompt.read()
   if (box.text.trim() !== '') {
-    $.ui.toast('reflect: clear the prompt box first - Edit puts the rule there')
+    $.ui.toast('reflect: clear the prompt box first, then press Edit rule again to put the rule there')
     return
   }
   const filled = await $.prompt.fill({ text: `remember: ${l.rule}` })
-  if (filled.isFilled) await decide($, l.id, 'skipped')
+  if (!filled.isFilled) return
+  await $.store.set('lastEdit', { rule: l.rule, scope: l.scope, at: await $.clock.now() })
+  await decide($, l.id, 'skipped')
 }
 
 export const register: Register = (on, options) => {
@@ -375,33 +419,66 @@ export const register: Register = (on, options) => {
     if (e.props.hasSurvey) return next(e)
     const list = await read($, pending)
     if (list.length === 0) return next(e)
-    const { Box, Button, Text } = $.ui.resolve(e)
+    const ui = $.ui.resolve(e)
+    const { Box, Button, Text } = ui
     const below = await next(e)
+    // One order on every card (repo save, global save, edit, discard); the save the check suggests is primary.
+    const actions = (learning: Learning, isTerminal: boolean) => {
+      const saveButton = (scope: Learning['scope']) => (
+        <Button
+          key={`${scope === learning.scope ? 'save' : 'other'}:${learning.id}`}
+          variant={scope === learning.scope ? 'primary' : undefined}
+          label={SAVE_LABEL[scope]}
+          onPress={() => saveTo($, learning, scope)}
+        />
+      )
+      return (
+        <Box flexDirection="row" flexWrap="wrap" gap={1}>
+          {saveButton('project')}
+          {saveButton('global')}
+          <Button key={`edit:${learning.id}`} dimColor={isTerminal} label="Edit rule" onPress={() => edit($, learning)} />
+          <Button key={`skip:${learning.id}`} dimColor={isTerminal} label="Discard rule" onPress={() => skip($, learning)} />
+        </Box>
+      )
+    }
+
+    // Desktop: one card at a time, the queue counted on it, the next one easing in after a decision.
+    const head = list[0]
+    if (e.surface !== 'terminal' && 'Svg' in ui && head !== undefined) {
+      const { Svg } = ui
+      const shown = await read($, shownHead)
+      const enteredMs = shown.id === head.id ? (await $.clock.now()) - shown.since : ENTER_MS
+      const width = Math.max(240, Math.min(1600, (e.props.bodyColumns || 100) * 8 - 8))
+      const card = { rule: head.rule, count: head.count, waiting: list.length - 1, suggested: head.scope }
+      const drawn = cardSvg(card, width, enteredMs < ENTER_MS ? enteredMs : undefined)
+      return (
+        <Box flexDirection="column">
+          <Svg source={drawn.source} alt={cardAlt(card)} width={width} height={drawn.height} />
+          {actions(head, false)}
+          {below}
+        </Box>
+      )
+    }
+
+    // Terminal: two rules when both fit the band's rows with the "more" line, else one.
+    const [first, second] = list
+    const isTwoFitting =
+      first !== undefined &&
+      second !== undefined &&
+      rowsFor(first, e.props.bodyColumns) + rowsFor(second, e.props.bodyColumns) + 1 <= e.props.maxRows
+    const shownRows = isTwoFitting ? 2 : 1
+    const rest = list.length - shownRows
     return (
       <Box flexDirection="column">
-        {list.slice(0, BAND_ROWS).map(l => (
-          <Box key={`row:${l.id}`} flexDirection="column">
-            <Text color="green" wrap="wrap">
-              {`reflect · "${l.rule}"${l.count > 1 ? ` ×${l.count}` : ''}`}
+        {list.slice(0, shownRows).map(learning => (
+          <Box key={`row:${learning.id}`} flexDirection="column">
+            <Text color="remember" wrap="wrap">
+              {`reflect · "${learning.rule}"${learning.count > 1 ? ` ×${learning.count}` : ''}`}
             </Text>
-            <Box flexDirection="row" gap={1}>
-              <Button
-                key={`save:${l.id}`}
-                variant="primary"
-                label={l.scope === 'project' ? 'Save to ./CLAUDE.md' : 'Save to ~/.claude/CLAUDE.md'}
-                onPress={() => saveTo($, l, l.scope)}
-              />
-              <Button
-                key={`other:${l.id}`}
-                label={l.scope === 'project' ? 'Global instead' : 'This repo instead'}
-                onPress={() => saveTo($, l, l.scope === 'project' ? 'global' : 'project')}
-              />
-              <Button key={`edit:${l.id}`} label="Edit" onPress={() => edit($, l)} />
-              <Button key={`skip:${l.id}`} label="Skip" onPress={() => skip($, l)} />
-            </Box>
+            {actions(learning, true)}
           </Box>
         ))}
-        {list.length > BAND_ROWS && <Text dimColor>{`reflect · +${list.length - BAND_ROWS} more · /reflect-queue`}</Text>}
+        {rest > 0 && <Text dimColor>{`reflect · ${rest} more waiting · /reflect-queue lists them`}</Text>}
         {below}
       </Box>
     )
