@@ -25,7 +25,7 @@
       "name": "pulse-filetree",
       "source": "./pulse-filetree",
       "description": "An IDE-style file tree for Claude Code that shows what Claude is doing and where in files",
-      "version": "0.2.25",
+      "version": "0.3.0",
       "category": "mod"
     },
     {

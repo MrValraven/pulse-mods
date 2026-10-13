@@ -119,7 +119,7 @@ async function texts(ui: any): Promise<string> {
   return JSON.stringify(await ui.drawn()) + rows
 }
 
-const STAMP = /\d{4}-\d{2}-\d{2} \d{2}:\d{2}/
+const STAMP = /[A-Z][a-z]{2} [ \d]\d (\d{4}|\d{2}:\d{2})/
 const NERD = /[\u{e000}-\u{f8ff}\u{f0000}-\u{fffff}]/u
 
 test('macOS Claude Code app: desktop pane draws, selects, opens with open', { timeoutMs: 20_000 }, async ($, on) => {
@@ -256,7 +256,7 @@ test('macOS app: every header button and the search box work on the desktop surf
   await ui.unmount()
 })
 
-test('hovering a header button says what it does left of the buttons where it fits, and the buttons sit a column apart', { timeoutMs: 20_000 }, async ($, on) => {
+test('hovering a header button says what it does beside the title where it fits, and the buttons sit a column apart', { timeoutMs: 20_000 }, async ($, on) => {
   const ran: Ran = []
   const root = '/Users/k/proj'
   const clock = world(on, { os: 'darwin', env: { HOME: '/Users/k' }, cwd: root, top: root, dirs: { [root]: [['.env', 'file'], ['a.ts', 'file']] }, status: '## main\0', numstat: '' }, ran)
@@ -265,7 +265,7 @@ test('hovering a header button says what it does left of the buttons where it fi
   for (const surface of ['desktop', 'terminal'] as const) {
     const ui = await $.ui.mount({ plugin: 'pulse-filetree', surface, component: 'Pane', requestId: 'filetree', props: paneProps(60) })
     await clock.settle()
-    expect(JSON.stringify(await ui.drawn())).toContain('"gap":1')
+    expect(JSON.stringify(await ui.drawn())).toContain('"columnGap":1')
     expect(await texts(ui)).not.toContain('reload tree and git')
     await ui.pointer({ type: 'enter', x: 0, y: 0, in: 'button-refresh' })
     await clock.settle()
@@ -1193,7 +1193,7 @@ for (const hints of ['on', 'off'] as const) {
     await clock.settle()
     const drawn = (await ui.drawn()) as any
     expect(JSON.stringify(drawn).includes('git init')).toBe(hints === 'on')
-    expect(drawn.children.find((c: any) => c.type === 'Client').props.props.rows.length).toBe(hints === 'on' ? 17 : 18)
+    expect(drawn.children.find((c: any) => c.type === 'Client').props.props.rows.length).toBe(hints === 'on' ? 16 : 17)
     await ui.unmount()
   })
 }
