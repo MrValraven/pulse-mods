@@ -1,0 +1,19 @@
+name: check
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  versions:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Mods and marketplace agree
+        run: node scripts/check-versions.mjs ${{ github.event_name == 'pull_request' && format('origin/{0}', github.base_ref) || '' }}
