@@ -1,0 +1,17 @@
+{
+  "name": "pulse-progress",
+  "version": "0.3.0",
+  "description": "Cosmetic mod: a QueerPulse-coloured progress band above the prompt and a /pulse panel of subagents. It only watches; it adds no tools and changes no prompts.",
+  "author": { "name": "QueerPulse" },
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "autoOpen": {
+      "type": "string",
+      "title": "Open the agents panel",
+      "description": "once: open it by itself the first time a subagent starts in a session; never: only with /pulse",
+      "default": "once",
+      "options": ["once", "never"]
+    }
+  },
+  "license": "MIT"
+}
