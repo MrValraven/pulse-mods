@@ -4,6 +4,7 @@ One section per release. Each release is tagged `<mod>-v<version>`.
 
 ## 2026-10-13
 
+- pulse-progress 0.3.1: the band above the prompt stops jumping back to an older count each second, and its dithered squares twinkle on smoothly through every redraw.
 - pulse-cache-tax 2.2.2: plugin.json links the upstream repository.
 - pulse-reflect 3.4.0: one card per learned rule, the same four buttons in a fixed order, and the shown rule stays put until you decide.
 - pulse-filetree 0.3.0: worded header buttons, colours from the Claude Code theme, aligned date and size columns, and a fading mark on files Claude touched.

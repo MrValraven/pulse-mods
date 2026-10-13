@@ -34,6 +34,7 @@ import {
   shownRatio,
   statusPhrase,
   totals,
+  TWEEN_MS,
   withCtxTween,
 } from './draw'
 
@@ -45,7 +46,7 @@ const view = atom({ plugin: 'pulse-progress', key: 'view' } as const, {
   didAutoOpen: false,
 })
 const now = atom({ plugin: 'pulse-progress', key: 'now' } as const, 0)
-// The band reads only this, so a subagent's every model request leaves it alone.
+// The band draws from this and the `now` tick, so a subagent's every model request leaves it alone.
 const bar = atom({ plugin: 'pulse-progress', key: 'bar' } as const, {
   done: 0,
   total: 0,
@@ -130,6 +131,15 @@ async function syncBar($: EngineInterface, at: number): Promise<void> {
       ? prev
       : { done: p.done, total: p.total, fromRatio: shownRatio(prev, at), fromDone: prev.done, fromTotal: prev.total, changedAt: at },
   )
+  // The surface rebuilds the band's image whenever it lays the prompt out again, and a rebuilt
+  // image plays its CSS from the start. A drawing left holding the tween would slide from the old
+  // count again each time, so the band redraws once the tween is over, settled.
+  $.clock.after(TWEEN_MS + 50, () => {
+    void (async () => {
+      const settledAt = await $.clock.now()
+      await update($, now, () => settledAt)
+    })()
+  })
 }
 
 async function togglePane($: EngineInterface): Promise<boolean> {
@@ -408,10 +418,14 @@ export const register: Register = (on, options) => {
     )
   })
 
-  // Reads only `bar` and `view`: a subagent's steps that move no count never redraw it.
+  // Reads `bar`, `view` and the `now` tick: a subagent's steps that move no count never redraw it.
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     const b = await read($, bar)
     const v = await read($, view)
+    // Subscribes to the tick. The surface rebuilds the band's image each second while the pane's
+    // clock runs, and a rebuilt image starts its loops at the phase baked into its source: drawn
+    // fresh each tick, that phase is the clock's, so the twinkle and the crab carry on unbroken.
+    await read($, now)
     if (b.total === 0 || v.isBandHidden || e.props.hasSurvey) return next(e)
     // Other mods' bands draw beneath this row. Claude Code's own placeholder is never nested.
     const drawn = await Promise.resolve(next(e)).catch(() => null)
@@ -443,7 +457,7 @@ export const register: Register = (on, options) => {
       return (
         <Box flexDirection="column">
           <Box flexDirection="row" alignItems="center" gap={1}>
-            <Svg source={bandSvg(b, width, at)} alt={`Pulse: ${p.done} of ${p.total} subagents finished`} width={width} height={BAND_H} />
+            <Svg key="pulse-band" source={bandSvg(b, width, at)} alt={`Pulse: ${p.done} of ${p.total} subagents finished`} width={width} height={BAND_H} />
             {crewButton}
             {dismiss}
           </Box>

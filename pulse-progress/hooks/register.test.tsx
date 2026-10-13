@@ -72,3 +72,14 @@ test('desktop: the band tweens its fill after a change, then draws the settled b
   expect(source).toContain('<svg')
   expect(source).not.toContain('@keyframes rvk')
 })
+
+// The surface rebuilds a band image from the source it holds; a source still holding the tween replays it.
+test('desktop: a mounted band redraws settled once its tween is over', async ($, on) => {
+  const clock = setup(on, {})
+  await spawn($)
+  await finish($)
+  const ui = await $.ui.mount({ plugin: PLUGIN, surface: 'desktop', component: 'AbovePrompt', props: band })
+  expect(String((await ui.find({ type: 'Svg' }))?.props.source)).toContain('@keyframes rvk')
+  await clock.advance(1000)
+  expect(String((await ui.find({ type: 'Svg' }))?.props.source)).not.toContain('@keyframes rvk')
+})
