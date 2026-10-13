@@ -34,6 +34,13 @@
       "description": "claude-reflect as a Claude Code mod: a model check on each short prompt finds reusable corrections (any language); a band above the prompt saves them to CLAUDE.md on one press",
       "version": "3.4.0",
       "category": "mod"
+    },
+    {
+      "name": "pulse-blast-radius",
+      "source": "./pulse-blast-radius",
+      "description": "Holds risky Bash commands (rm -rf, git reset --hard, git clean, force push, migrations), shows what they would change, and waits for Proceed or Cancel. Fork of anthropics/claude-code-playground blast-radius.",
+      "version": "0.1.0",
+      "category": "mod"
     }
   ]
 }
