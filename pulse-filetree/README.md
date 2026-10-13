@@ -2,7 +2,7 @@
 
 A Claude Code mod that adds a file tree pane to the right sidebar. It shows git status per file and folder, and it lights up the files Claude reads, writes and commits while it works.
 
-- **Tree of the working folder**: folders first, natural sort, Nerd Font icons or plain Unicode. Indent guides show how deep each row sits. Long names are cut in the middle so the start and the extension stay readable. It follows the session cwd, or stays on a folder you pick with `/filetree <path>`.
+- **Tree of the working folder**: folders first, natural sort. Each file shows a small coloured badge for its type (`TS`, `JS`, `{}`, `M↓`) and each folder a block in a colour for its kind (green `src`, blue `docs`, teal `tests`, red `dist`). With a Nerd Font in the terminal the Nerd Font icons show instead, in the same colours. Git-ignored files and folders fade. Indent guides show how deep each row sits, and the guide of the folder holding the cursor is drawn brighter. Long names are cut in the middle so the start and the extension stay readable. It follows the session cwd, or stays on a folder you pick with `/filetree <path>`.
 - **Colours**: without an Omarchy theme file the pane uses your Claude Code theme colours, so it fits a light or a dark theme. With an Omarchy theme it uses that theme's colours.
 - **Git status**: each file is coloured by its status, and modified files show `+N -N` lines changed. Folders keep the text colour, show a dot in their status colour, and show file counts such as `?1 M2 D1`. A branch row shows the branch, upstream, ahead and behind. The repo totals (or "clean") sit beside the title in the desktop app and on the branch row in the terminal.
 - **Claude activity**: files Claude reads or searches shimmer purple, files it writes shimmer orange, staged and committed files shimmer green. Closed folders open to show the file. After the shimmer, a mark stays in the gutter beside the file and fades out over about 90 seconds.
@@ -33,7 +33,7 @@ All settings are in `/config` under this plugin.
 | Setting | Default | Options | Meaning |
 | --- | --- | --- | --- |
 | `activity` | `reads and writes` | `reads and writes`, `writes`, `reads`, `none` | Which Claude activity shimmers in the tree. |
-| `glyphs` | `auto` | `auto`, `nerd`, `plain` | `auto` uses Nerd Font icons when one is found (always over SSH), and plain Unicode in the desktop app. |
+| `glyphs` | `auto` | `auto`, `nerd`, `plain` | `auto` uses Nerd Font icons when one is found (always over SSH), and coloured type badges and folders in the desktop app or without a Nerd Font. `nerd` always uses Nerd Font icons. `plain` always uses the badges. |
 | `follow` | `on` | `on`, `off` | `on` scrolls the tree to what Claude touches. `off` keeps your scroll position; highlights still show. |
 | `start` | `on` | `on`, `off` | `on` opens the pane when a session starts. `off` waits for `/filetree`. |
 | `column` | `date` | `date`, `age`, `size` | What the right column shows at start. The sizes button switches between size and date or age. |

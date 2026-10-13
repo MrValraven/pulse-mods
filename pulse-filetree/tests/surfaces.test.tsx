@@ -1,5 +1,7 @@
 import { expect, mock, test } from 'claude-code/testing'
 
+import { onInkFor } from '../hooks/icons'
+import { mix } from '../hooks/look'
 import { LINUX_LAUNCH } from '../hooks/open'
 import { age, ancestorsOf, formatSize, replaceChildren, toNodes } from '../hooks/tree'
 
@@ -1028,7 +1030,62 @@ test('without an Omarchy theme the pane keeps the terminal background and nothin
   await clock.advance(10_000)
   await clock.settle()
   expect(ran.filter(a => a[0] === 'theme-stat').length).toBe(stats)
-  expect(await texts(ui)).not.toContain('"backgroundColor":"#')
+  // The pane itself has no background; the rows' type chips carry their own.
+  expect(JSON.stringify(await ui.drawn())).not.toContain('"backgroundColor":"#')
+  await ui.unmount()
+})
+
+async function badgeTree($: any, on: any) {
+  const root = '/Users/k/proj'
+  const clock = world(on, {
+    os: 'darwin', env: { HOME: '/Users/k', TMPDIR: '/var/folders/x/T/' }, cwd: root, top: root,
+    dirs: { [root]: [['src', 'dir'], ['a.ts', 'file'], ['skip.ts', 'file']], [`${root}/src`]: [['b.ts', 'file']] },
+    status: '## main\0!! skip.ts\0', numstat: '',
+  }, [])
+  await $.session.start({ cwd: root, surface: 'desktop', isInteractive: true })
+  await clock.settle()
+  const ui = await $.ui.mount({ plugin: 'pulse-filetree', surface: 'desktop', component: 'Pane', requestId: 'filetree', props: paneProps(60) })
+  await clock.settle()
+  const rowOf = async (id: string) => (((await ui.drawn()) as any).children.find((c: any) => c.type === 'Client').props.props.rows as any[]).find(r => r.id === id)
+  return { root, clock, ui, rowOf }
+}
+
+test('desktop: a .ts file draws a TS chip in its colour and a folder a coloured block', { timeoutMs: 20_000 }, async ($, on) => {
+  const { root, ui, rowOf } = await badgeTree($, on)
+  const file = await rowOf(`${root}/a.ts`)
+  const chip = file.left.find((segment: any) => segment.role === 'icon')
+  expect(chip).toEqual({ t: 'TS', c: '#ffffff', bg: '#3178c6', b: true, role: 'icon' })
+  expect(file.left[file.left.indexOf(chip) + 1]).toEqual({ t: ' ' })
+  expect(JSON.stringify(await ui.drawn({ in: 'rows' }))).toContain('"backgroundColor":"#3178c6"')
+  const folder = await rowOf(`${root}/src`)
+  // The src green #58b86a sits above the 0.28 luminance cap, so it is pulled 15% toward black.
+  expect(folder.left.find((segment: any) => segment.role === 'icon')).toEqual({ t: '▇▅ ', c: '#4b9c5a', role: 'icon' })
+  expect(folder.left.find((segment: any) => segment.role === 'caret')?.t).toBe('▸ ')
+  await ui.unmount()
+})
+
+test('an ignored file fades whole: chip, name and right column', { timeoutMs: 20_000 }, async ($, on) => {
+  const { root, ui, rowOf } = await badgeTree($, on)
+  const row = await rowOf(`${root}/skip.ts`)
+  const chip = row.left.find((segment: any) => segment.role === 'icon')
+  expect(chip.bg).not.toBe('#3178c6')
+  expect(chip.bg).toBe(mix('#3178c6', '#7a7183', 0.6))
+  expect(chip.c).toBe(onInkFor(mix('#3178c6', '#7a7183', 0.6)))
+  expect(row.left.find((segment: any) => segment.t === 'skip.ts').c).toBe('inactive')
+  expect(row.right.filter((segment: any) => segment.c !== undefined).every((segment: any) => segment.c === 'subtle')).toBe(true)
+  expect((await rowOf(`${root}/a.ts`)).left.find((segment: any) => segment.role === 'icon').bg).toBe('#3178c6')
+  await ui.unmount()
+})
+
+test('the indent guide of the folder holding the cursor is drawn brighter', { timeoutMs: 20_000 }, async ($, on) => {
+  const { root, clock, ui, rowOf } = await badgeTree($, on)
+  await ui.post({ press: `${root}/src` }, { in: 'rows' })
+  await clock.settle()
+  const child = await rowOf(`${root}/src/b.ts`)
+  expect(child.left[1]).toEqual({ t: '│ ', c: 'inactive' })
+  await ui.post({ press: `${root}/a.ts` }, { in: 'rows' })
+  await clock.settle()
+  expect((await rowOf(`${root}/src/b.ts`)).left[1]).toEqual({ t: '│ ', c: 'subtle' })
   await ui.unmount()
 })
 

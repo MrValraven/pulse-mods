@@ -5,8 +5,8 @@ import type { ButtonProps } from './button'
 import type { Activity, FileNode, FileTree, Theme } from '../types'
 import { BRANCH_ICON, chainOf, type GitAction, gitActions, readOnly, readTargets, resolve } from './git'
 import type { RowSpec, RowsProps, Seg } from './rows'
-import { CHEVRON_CLOSED, CHEVRON_OPEN, fileIcon } from './icons'
-import { buildPalette, dateLabel, gitInk, mix, type Palette, RECENT_MS, RECENT_SOFT_MS, recentLevel, truncateMiddle, widthOf } from './look'
+import { CHEVRON_CLOSED, CHEVRON_OPEN, fileBadge, fileIcon, folderInk, onInkFor } from './icons'
+import { buildPalette, dateLabel, gitInk, inkOnPane, mix, type Palette, RECENT_MS, RECENT_SOFT_MS, recentLevel, truncateMiddle, widthOf } from './look'
 import {
   age,
   ancestorsOf,
@@ -1543,6 +1543,13 @@ export const register: Register = (on, options) => {
     const maxGuideLevels = Math.max(2, Math.floor((width * 0.35) / 2))
     const fixedTrailing = 2 + (isBarShown ? 1 : 0) + 1
     const MIN_NAME_ROOM = 10
+    // The active indent guide, as in VS Code: the folder holding the cursor (or the cursor
+    // itself when it is an open folder) has its guide drawn brighter down its open rows.
+    const cursorRow = rows.find(row => row.node.id === t.cursor)
+    const activeFolder = cursorRow ? (cursorRow.node.kind === 'dir' && cursorRow.open ? cursorRow.node.id : cursorRow.node.parent) : ''
+    const activeLevel = activeFolder && activeFolder !== t.root ? (rows.find(row => row.node.id === activeFolder)?.depth ?? -1) : -1
+    // An ignored row fades whole: its inks pulled most of the way to the muted colour.
+    const FADE = 0.6
 
     const rowSpec = (r: (typeof rows)[number]): RowSpec => {
       const n = r.node
@@ -1557,15 +1564,37 @@ export const register: Register = (on, options) => {
       // Files take their git colour; a folder keeps the text colour and says its changes in its cells.
       const plainColor = n.hidden ? palette.muted : palette.text
       const nameColor = isIgnored ? palette.muted : n.kind === 'dir' ? plainColor : (statusInk ?? plainColor)
-      const iconColor = isIgnored ? palette.faint : palette.muted
       const isRepo = n.kind === 'dir' && n.id === t.top
-      const glyph = unicode ? '' : `${fileIcon(n, r.open, isRepo)} `
+      const fade = (color: string) => (isIgnored ? mix(color, palette.mutedHex, FADE) : color)
+      // A folder's block or Nerd glyph in its kind's colour; a file's chip, or its Nerd glyph in the chip's colour.
+      const badge = n.kind === 'dir' ? undefined : fileBadge(n)
+      const glyphInk = isRepo ? palette.accent : badge ? inkOnPane(palette, badge.ink) : inkOnPane(palette, folderInk(n.name))
+      const glyph = unicode ? (badge ? '' : '▇▅ ') : `${fileIcon(n, r.open, isRepo)} `
+      const iconSegs: Seg[] =
+        unicode && badge
+          ? [{ t: badge.text, c: onInkFor(fade(badge.ink)), bg: fade(badge.ink), b: true, role: 'icon' }, { t: ' ' }]
+          : isRowLit
+            ? [{ t: glyph, sh: tone, dim: isDim, one: true, role: 'icon' }]
+            : [{ t: glyph, c: fade(glyphInk), role: 'icon' }]
       const linkMark = unicode && n.kind === 'link' ? ' →' : ''
       const caret = n.kind === 'dir' ? (unicode ? (r.open ? '▾' : '▸') : r.open ? CHEVRON_OPEN : CHEVRON_CLOSED) + ' ' : '  '
       const isCapped = r.depth > maxGuideLevels
       const guides = r.depth === 0 ? '' : isCapped ? `… ${'│ '.repeat(maxGuideLevels - 1)}` : '│ '.repeat(r.depth)
+      // The guides in up to three runs, the middle one the active folder's level when this row
+      // sits under it and that level is drawn (a capped row's ellipsis stands for the cut ones).
+      const firstShownLevel = isCapped ? r.depth - (maxGuideLevels - 1) : 0
+      const isUnderActive = activeLevel >= firstShownLevel && activeLevel < r.depth && inside(activeFolder, n.id)
+      const guideSegs: Seg[] = !guides
+        ? []
+        : isUnderActive
+          ? [
+              { t: (isCapped ? '… ' : '') + '│ '.repeat(activeLevel - firstShownLevel), c: palette.faint },
+              { t: '│ ', c: palette.muted },
+              { t: '│ '.repeat(r.depth - activeLevel - 1), c: palette.faint },
+            ].filter(segment => segment.t)
+          : [{ t: guides, c: palette.faint }]
       const rowCells = cells.get(n.id) ?? cellsOf(r)
-      const roomBesides = width - 1 - widthOf(guides) - 2 - widthOf(glyph) - widthOf(linkMark) - segsWidth(rowCells.detail) - fixedTrailing
+      const roomBesides = width - 1 - widthOf(guides) - 2 - segsWidth(iconSegs) - widthOf(linkMark) - segsWidth(rowCells.detail) - fixedTrailing
       // A row whose name would be squeezed under ten columns gives up its date for the name.
       const isDateDropped = rowCells.isDate && roomBesides - mainWidth < MIN_NAME_ROOM
       const nameRoom = Math.max(4, roomBesides - (isDateDropped ? 0 : mainWidth))
@@ -1581,13 +1610,14 @@ export const register: Register = (on, options) => {
             : { t: ' ' }
       const left: Seg[] = [
         gutter,
-        ...(guides ? [{ t: guides, c: palette.faint }] : []),
-        { t: caret, c: palette.muted },
-        ...(glyph ? [isRowLit ? { t: glyph, sh: tone, dim: isDim, one: true } : { t: glyph, c: iconColor }] : []),
+        ...guideSegs,
+        { t: caret, c: palette.muted, role: n.kind === 'dir' ? 'caret' : undefined },
+        ...iconSegs,
         isRowLit ? { t: name, sh: tone, dim: isDim, b: isBright } : { t: name, c: nameColor, b: n.id === t.selected, s: status === 'D' && n.kind !== 'dir' },
         ...(linkMark ? [{ t: linkMark, c: palette.muted }] : []),
       ]
-      const right: Seg[] = [...rowCells.detail, ...(mainWidth && !isDateDropped ? padTo(rowCells.main, mainWidth) : []), rowCells.mark]
+      const cellSegs: Seg[] = [...rowCells.detail, ...(mainWidth && !isDateDropped ? padTo(rowCells.main, mainWidth) : []), rowCells.mark]
+      const right = isIgnored ? cellSegs.map(segment => (segment.c === undefined ? segment : { ...segment, c: palette.faint })) : cellSegs
       return { id: n.id, left: clean(left), right: clean(right) }
     }
 
@@ -1749,7 +1779,7 @@ export const register: Register = (on, options) => {
         <Client
           key="rows"
           module="./rows.tsx"
-          props={{ rows: specs, active: t.cursor, activeBg: palette.cursorBg, hoverBg: palette.hoverBg, tones: palette.shimmer, pointer, ...(bar ? { bar } : {}) } satisfies RowsProps}
+          props={{ rows: specs, active: t.cursor, activeBg: palette.cursorBg, hoverBg: palette.hoverBg, accent: palette.accent, tones: palette.shimmer, pointer, ...(bar ? { bar } : {}) } satisfies RowsProps}
         />
         <Box flexGrow={1} />
         {isDesktop && (t.selected || latest) && divider(width)}
