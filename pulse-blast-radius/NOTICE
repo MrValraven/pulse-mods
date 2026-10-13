@@ -1,0 +1,7 @@
+pulse-blast-radius is the Blast Radius mod from anthropics/claude-code-playground
+(https://github.com/anthropics/claude-code-playground/tree/main/claude-code/mods/blast-radius),
+commit 569c5283d9a0a7ee7938df85bb32e4f48cbb8c86, Copyright 2026 Anthropic PBC,
+used under the Apache License 2.0 in LICENSE.
+
+Changes from the original: the plugin is renamed blast-radius -> pulse-blast-radius
+in .claude-plugin/plugin.json. Every other file is unchanged.

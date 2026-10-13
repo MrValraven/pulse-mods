@@ -8,6 +8,7 @@ Personal Claude Code mods, published as one marketplace. Every mod name starts w
 | [`pulse-cache-tax`](pulse-cache-tax) | Keeps the one-hour prompt cache warm during `/keepwarm` windows and holds a cold send once with its estimated rewrite cost. | [karanb192/cache-tax](https://github.com/karanb192/cache-tax) (MIT) |
 | [`pulse-filetree`](pulse-filetree) | An IDE-style file tree pane that shows what Claude reads and writes. | [data-goblin/claude-code-filetree](https://github.com/data-goblin/claude-code-filetree) (MIT) |
 | [`pulse-reflect`](pulse-reflect) | Finds reusable corrections in short prompts and saves them to CLAUDE.md on one press. | [bayramannakov/claude-reflect](https://github.com/bayramannakov/claude-reflect) (MIT) |
+| [`pulse-blast-radius`](pulse-blast-radius) | Holds a risky Bash command (`rm -rf`, `git reset --hard`, force push, migrations), shows what it would change, and waits for Proceed or Cancel. | [blast-radius](https://github.com/anthropics/claude-code-playground/tree/main/claude-code/mods/blast-radius) (Apache-2.0) |
 
 Each mod has its own README with its commands, settings and everything it touches.
 

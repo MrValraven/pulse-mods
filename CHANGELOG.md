@@ -4,6 +4,7 @@ One section per release. Each release is tagged `<mod>-v<version>`.
 
 ## 2026-10-13
 
+- pulse-blast-radius 0.1.0: first publish, holds risky Bash commands and shows what they would change before Proceed or Cancel.
 - pulse-filetree 0.4.0: coloured file-type badges (TS, JS, {}) and coloured folders like VS Code, faded git-ignored rows, a brighter guide for the folder you are in, folders that unfold and fold smoothly, and hover drawn by the app.
 - pulse-progress 0.3.1: the band above the prompt stops jumping back to an older count each second, and its dithered squares twinkle on smoothly through every redraw.
 - pulse-cache-tax 2.2.2: plugin.json links the upstream repository.
