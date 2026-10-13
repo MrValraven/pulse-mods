@@ -1,0 +1,9 @@
+{
+  "name": "pulse-cache-tax",
+  "version": "2.2.1",
+  "description": "Keeps the one-hour prompt cache warm during /keepwarm windows and holds a cold send once with its estimated rewrite cost. Pinging runs only after /keepwarm. Fork of karanb192/cache-tax.",
+  "author": {
+    "name": "Karan Bansal"
+  },
+  "license": "MIT"
+}
