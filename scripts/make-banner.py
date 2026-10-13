@@ -95,10 +95,10 @@ def name_keyframes(index):
 
 
 def count_keyframes(index):
-    windows = [(0, 14), (14, 30), (30, 46), (46, 62), (62, 96)]
+    windows = [(0, 14), (14, 30), (30, 46), (46, 62), (62, 89)]  # the count resets as the bar starts sliding back
     start, end = windows[index]
     if index == 0:
-        return f"@keyframes n0{{0%,13%{{opacity:1}}14%,95%{{opacity:0}}96%,100%{{opacity:1}}}}"
+        return f"@keyframes n0{{0%,13%{{opacity:1}}14%,88%{{opacity:0}}89%,100%{{opacity:1}}}}"
     return f"@keyframes n{index}{{0%,{start - 1}%{{opacity:0}}{start}%,{end - 1}%{{opacity:1}}{end}%,100%{{opacity:0}}}}"
 
 
