@@ -20,8 +20,9 @@ const TREE_BUDGET = 70_000
 const MAX_ROWS = 1_500
 const FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏']
 
+// A soft band of the tone's lighter shades that sweeps along the name while Claude is on it.
 function shimmer(i: number, phase: number, len: number, palette: string[]): string {
-  const band = ((phase * 1.6) % (len + 8)) - 4
+  const band = ((phase * 1.2) % (len + 8)) - 4
   const d = Math.abs(i - band)
   return palette[d < 0.8 ? 3 : d < 1.8 ? 2 : d < 2.8 ? 1 : 0] ?? palette[0] ?? '#f97316'
 }
@@ -135,7 +136,9 @@ const Rows: ClientModule<RowsProps, Local> = (props, surface) => {
         {r.left.map(draw)}
       </Box>
       <Box flexGrow={1} />
-      {r.right.map(draw)}
+      <Box flexDirection="row" flexShrink={0}>
+        {r.right.map(draw)}
+      </Box>
       {props.bar && (
         <Text color={i >= props.bar.pos && i < props.bar.pos + props.bar.size ? props.bar.thumb : props.bar.track}>
           {i >= props.bar.pos && i < props.bar.pos + props.bar.size ? '┃' : '│'}
