@@ -11,7 +11,7 @@
       "name": "pulse-progress",
       "source": "./pulse-progress",
       "description": "Cosmetic mod: a QueerPulse-coloured progress band above the prompt and a /pulse panel of subagents. It only watches; it adds no tools and changes no prompts.",
-      "version": "0.3.0",
+      "version": "0.3.1",
       "category": "mod"
     },
     {
