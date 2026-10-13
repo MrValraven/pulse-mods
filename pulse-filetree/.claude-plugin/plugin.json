@@ -1,6 +1,6 @@
 {
   "name": "pulse-filetree",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "An IDE-style file tree for Claude Code that shows what Claude is doing and where in files",
   "types": "./types/index.d.ts",
   "author": {
@@ -29,7 +29,7 @@
     "glyphs": {
       "type": "string",
       "title": "Glyphs",
-      "description": "Icon set: auto uses Nerd Font icons when one is installed here, except in the desktop app; plain uses Unicode only",
+      "description": "Icon set: auto uses Nerd Font icons when one is installed here, except in the desktop app, and otherwise coloured type badges (TS, JS, {}) and coloured folders; nerd forces Nerd Font icons; plain forces the badges",
       "default": "auto",
       "options": [
         "auto",

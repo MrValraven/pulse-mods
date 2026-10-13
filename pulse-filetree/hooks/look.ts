@@ -9,7 +9,7 @@ import { DEFAULT_THEME } from './tree'
 // that background, and its own accent, muted, red and selection win.
 
 type Hue = 'coral' | 'jade' | 'amber' | 'red' | 'lilac' | 'teal' | 'blue' | 'cyan'
-type Mode = 'light' | 'dark' | 'both'
+export type Mode = 'light' | 'dark' | 'both'
 
 const INKS: Record<Mode, Record<Hue, string>> = {
   light: { coral: '#a8492f', jade: '#2f6e52', amber: '#875c14', red: '#a83e3b', lilac: '#6a50b8', teal: '#1f6e69', blue: '#3a62a8', cyan: '#1f6c84' },
@@ -24,6 +24,8 @@ const TONE_HUE: Record<string, Hue> = { orange: 'coral', green: 'jade', teal: 't
 
 export type Palette = {
   isCustomTheme: boolean
+  // light or dark when a theme file names the background, both when nothing says which.
+  mode: Mode
   text: string | undefined
   muted: string
   // The muted colour as a hex, for mixing: a theme key cannot be mixed.
@@ -54,7 +56,7 @@ export function mix(from: string, to: string, amount: number): string {
   return `#${start.map((channel, index) => Math.round(channel + ((end[index] ?? channel) - channel) * amount).toString(16).padStart(2, '0')).join('')}`
 }
 
-function luminance(hex: string): number {
+export function luminance(hex: string): number {
   const linear = (channel: number) => {
     const value = channel / 255
     return value <= 0.03928 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4
@@ -87,6 +89,7 @@ export function buildPalette(theme: Theme, isDesktop: boolean): Palette {
   }
   return {
     isCustomTheme,
+    mode,
     text: theme.fg || undefined,
     muted,
     mutedHex,
@@ -103,6 +106,32 @@ export function buildPalette(theme: Theme, isDesktop: boolean): Palette {
     ink: tone => inks[TONE_HUE[tone] ?? 'coral'],
     shimmer,
   }
+}
+
+// A file or folder ink drawn as text, clamped in luminance so it keeps about 3:1 against
+// cream (#faf6f0) at most 0.28 and against near-black (#141414) at least 0.12. Without a
+// known background both bounds apply.
+const INK_LUMINANCE_BOUNDS: Record<Mode, { lowest: number; highest: number }> = {
+  light: { lowest: 0, highest: 0.28 },
+  dark: { lowest: 0.12, highest: 1 },
+  both: { lowest: 0.12, highest: 0.28 },
+}
+
+export function inkOnPane(palette: Palette, ink: string): string {
+  if (!/^#[0-9a-fA-F]{6}$/.test(ink)) return ink
+  const { lowest, highest } = INK_LUMINANCE_BOUNDS[palette.mode]
+  const level = luminance(ink)
+  if (level >= lowest && level <= highest) return ink
+  const target = level > highest ? '#000000' : '#ffffff'
+  const isInside = (candidate: string) => {
+    const candidateLevel = luminance(candidate)
+    return candidateLevel >= lowest && candidateLevel <= highest
+  }
+  for (let step = 1; step <= 20; step++) {
+    const candidate = mix(ink, target, step * 0.05)
+    if (isInside(candidate)) return candidate
+  }
+  return mix(ink, target, 1)
 }
 
 export function gitInk(palette: Palette, letter: string | undefined): string | undefined {

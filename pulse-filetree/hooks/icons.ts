@@ -1,4 +1,5 @@
 import type { FileNode } from '../types'
+import { luminance } from './look'
 
 const cp = (n: number) => String.fromCodePoint(n)
 
@@ -112,6 +113,148 @@ export function fileIcon(n: FileNode, open: boolean, isRepo: boolean): string {
   const dot = lower.lastIndexOf('.')
   const ext = dot >= 0 ? lower.slice(dot + 1) : ''
   return cp(EXTS[ext] ?? 0xf0214)
+}
+
+// Without a Nerd Font a file shows a two-cell chip in its language's colour, as in VS Code's
+// Material icon theme, and a folder a block in its kind's colour. The chip's text is white or
+// near-black, whichever reads better on that colour.
+export type Badge = { text: string; ink: string; onInk: string }
+
+const DARK_TEXT = '#1b1b19'
+const GREY = '#8a877f'
+
+export function onInkFor(ink: string): string {
+  const level = luminance(ink)
+  return 1.05 / (level + 0.05) >= (level + 0.05) / (luminance(DARK_TEXT) + 0.05) ? '#ffffff' : DARK_TEXT
+}
+
+// Each row: the names or extensions (space separated), the chip's two cells and its colour.
+const NAME_BADGES: [string, string, string][] = [
+  ['package.json', 'NP', '#cb3837'],
+  ['package-lock.json pnpm-lock.yaml yarn.lock bun.lockb bun.lock cargo.lock poetry.lock gemfile.lock composer.lock', 'LK', GREY],
+  ['dockerfile containerfile .dockerignore docker-compose.yml docker-compose.yaml compose.yml compose.yaml', 'DK', '#2496ed'],
+  ['.gitignore .gitattributes .gitmodules .gitkeep', 'GI', '#e2643c'],
+  ['.env', 'EV', '#d9b54a'],
+  ['license licence license.md license.txt', '© ', '#c9a25a'],
+  ['readme readme.md readme.txt', 'i ', '#5b8fd6'],
+  ['makefile gnumakefile', 'MK', '#6d8086'],
+  ['claude.md agents.md', '✱ ', '#d97757'],
+  ['.bashrc .bash_profile .zshrc .zprofile .zshenv .profile', '$_', '#7cc36e'],
+]
+
+const PATTERN_BADGES: [RegExp, string, string][] = [
+  [/^tsconfig.*\.json$/, 'TS', '#3178c6'],
+  [/^\.env\./, 'EV', '#d9b54a'],
+  [/^(\.prettierrc|prettier\.config\.)/, 'PR', '#c596c7'],
+  [/^(eslint\.config\.|\.eslintrc)/, 'ES', '#8080f2'],
+  [/^vite\.config\./, 'VT', '#a855f7'],
+  [/^vitest\.config\./, 'VI', '#6e9f18'],
+  [/^(dockerfile|containerfile)\.|\.dockerfile$|^docker-compose\..+\.ya?ml$/, 'DK', '#2496ed'],
+]
+
+const EXTENSION_BADGES: [string, string, string][] = [
+  ['ts mts cts', 'TS', '#3178c6'],
+  ['tsx', 'TX', '#2fa7c9'],
+  ['js mjs cjs', 'JS', '#f0db4f'],
+  ['jsx', 'JX', '#e8c93a'],
+  ['json jsonc json5', '{}', '#d9a93a'],
+  ['md mdx markdown', 'M↓', '#5b8fd6'],
+  ['css', '# ', '#8f6fd6'],
+  ['scss sass', 'S#', '#cd6799'],
+  ['html htm', '<>', '#e2643c'],
+  ['sh bash zsh fish', '$_', '#7cc36e'],
+  ['ps1 psm1', 'PS', '#5391fe'],
+  ['yaml yml', 'YM', '#cb5d5d'],
+  ['toml', 'TM', '#9c4221'],
+  ['ini cfg conf properties', 'CF', GREY],
+  ['py pyi pyw', 'PY', '#3776ab'],
+  ['ipynb', 'NB', '#f37626'],
+  ['go', 'GO', '#00add8'],
+  ['rs', 'RS', '#dea584'],
+  ['rb erb', 'RB', '#cc342d'],
+  ['java', 'JV', '#b07219'],
+  ['kt kts', 'KT', '#a97bff'],
+  ['scala', 'SC', '#dc322f'],
+  ['swift', 'SW', '#f05138'],
+  ['dart', 'DT', '#00b4ab'],
+  ['c', 'C ', '#555fbf'],
+  ['h', 'H ', '#7b83c9'],
+  ['cpp cc cxx', 'C+', '#f34b7d'],
+  ['hpp hh hxx', 'H+', '#c96a8f'],
+  ['cs', 'C#', '#178600'],
+  ['php', 'PH', '#777bb4'],
+  ['lua', 'LU', '#4f6fd6'],
+  ['ex exs', 'EX', '#8e6fb8'],
+  ['hs', 'HS', '#5e5086'],
+  ['zig', 'ZG', '#f7a41d'],
+  ['r', 'R ', '#276dc3'],
+  ['sql', 'SQ', '#e38c00'],
+  ['db sqlite sqlite3', 'DB', '#e38c00'],
+  ['graphql gql', 'GQ', '#e10098'],
+  ['proto', 'PB', '#4f9de0'],
+  ['tf tfvars', 'TF', '#7b42bc'],
+  ['vue', 'VU', '#41b883'],
+  ['svelte', 'SV', '#ff3e00'],
+  ['astro', 'AS', '#ff5d01'],
+  ['xml plist', '<>', GREY],
+  ['svg', 'SG', '#ffb13b'],
+  ['png jpg jpeg gif webp avif ico bmp heic', 'IM', '#a074c4'],
+  ['mp4 mkv mov webm avi', 'VD', '#e05d44'],
+  ['mp3 wav flac ogg m4a aac', 'AU', '#e06c9f'],
+  ['pdf', 'PD', '#e5252a'],
+  ['zip gz tgz tar xz 7z bz2 rar', 'ZP', GREY],
+  ['csv tsv', 'CS', '#3fae6a'],
+  ['txt log', 'Tx', GREY],
+  ['diff patch', 'DF', '#7cc36e'],
+  ['ttf otf woff woff2', 'FT', GREY],
+  ['wasm', 'WA', '#654ff0'],
+  ['lock', 'LK', GREY],
+]
+
+const badgeOf = (text: string, ink: string): Badge => ({ text, ink, onInk: onInkFor(ink) })
+
+function badgeTable(entries: [string, string, string][]): Map<string, Badge> {
+  const table = new Map<string, Badge>()
+  for (const [keys, text, ink] of entries) {
+    const badge = badgeOf(text, ink)
+    for (const key of keys.split(' ')) table.set(key, badge)
+  }
+  return table
+}
+
+const BY_NAME = badgeTable(NAME_BADGES)
+const BY_EXTENSION = badgeTable(EXTENSION_BADGES)
+const BY_PATTERN = PATTERN_BADGES.map(([pattern, text, ink]) => [pattern, badgeOf(text, ink)] as const)
+const DEFAULT_BADGE = badgeOf('··', GREY)
+
+export function fileBadge(node: Pick<FileNode, 'name'>): Badge {
+  const lower = node.name.toLowerCase()
+  const named = BY_NAME.get(lower)
+  if (named) return named
+  for (const [pattern, badge] of BY_PATTERN) if (pattern.test(lower)) return badge
+  const dot = lower.lastIndexOf('.')
+  return (dot > 0 ? BY_EXTENSION.get(lower.slice(dot + 1)) : undefined) ?? DEFAULT_BADGE
+}
+
+const FOLDER_INKS: [string, string][] = [
+  ['.claude .github .vscode', '#e0795a'],
+  ['src source lib', '#58b86a'],
+  ['docs doc', '#4f9de0'],
+  ['test tests __tests__ e2e spec coverage', '#3fae9e'],
+  ['public static assets', '#3fb6d8'],
+  ['dist build out', '#d8605e'],
+  ['node_modules', '#7aa35a'],
+  ['scripts bin config configs', '#7f93ad'],
+  ['hooks plugins', '#a98be8'],
+  ['components ui', '#e8a33d'],
+  ['types @types', '#4f7cc4'],
+  ['styles css', '#8f6fd6'],
+  ['images img icons', '#a074c4'],
+]
+const FOLDER_BY_NAME = new Map(FOLDER_INKS.flatMap(([names, ink]) => names.split(' ').map(name => [name, ink] as const)))
+
+export function folderInk(name: string): string {
+  return FOLDER_BY_NAME.get(name.toLowerCase()) ?? '#c9a25a'
 }
 
 export const GIT_COLOR: Record<string, string> = {
