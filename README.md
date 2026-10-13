@@ -1,4 +1,4 @@
-# pulse-mods
+<h1><img src="assets/banner.svg" alt="pulse-mods: Claude Code mods progress, cache-tax, filetree and reflect" width="100%"></h1>
 
 Personal Claude Code mods, published as one marketplace. Every mod name starts with `pulse-`.
 
@@ -35,3 +35,5 @@ Sessions run a cached copy of each version, so every change to a mod needs a ver
 ## Licence
 
 The repository is under the [MIT licence](LICENSE). Each mod folder also keeps the licence and credits of the project it is based on.
+
+The banner embeds [Fraunces](https://github.com/undercasetype/Fraunces) under the SIL Open Font License ([assets/LICENSE-fraunces.txt](assets/LICENSE-fraunces.txt)), and its crab is the pulse-progress sprite (see [pulse-progress/NOTICE](pulse-progress/NOTICE)). To change it, edit `scripts/make-banner.py` and run it as its header describes.
