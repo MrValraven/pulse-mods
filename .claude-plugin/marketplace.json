@@ -32,7 +32,7 @@
       "name": "pulse-reflect",
       "source": "./pulse-reflect",
       "description": "claude-reflect as a Claude Code mod: a model check on each short prompt finds reusable corrections (any language); a band above the prompt saves them to CLAUDE.md on one press",
-      "version": "3.3.0",
+      "version": "3.4.0",
       "category": "mod"
     }
   ]

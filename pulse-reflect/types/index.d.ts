@@ -24,6 +24,8 @@ declare module 'claude-code' {
       pending: Learning[]
       /** Rules saved in this session: the system prompt carries them until CLAUDE.md is read again. */
       savedThisSession: SavedRule[]
+      /** The rule at the band's head and when it got there: it stays first while it waits, and the desktop card eases in from `since`. */
+      shownHead: { id: string; since: number }
     }
   }
 }
