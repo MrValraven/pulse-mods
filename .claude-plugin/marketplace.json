@@ -1,0 +1,39 @@
+{
+  "name": "pulse-mods",
+  "owner": {
+    "name": "MrValraven"
+  },
+  "metadata": {
+    "description": "Personal Claude Code mods."
+  },
+  "plugins": [
+    {
+      "name": "pulse-progress",
+      "source": "./pulse-progress",
+      "description": "Cosmetic mod: a QueerPulse-coloured progress band above the prompt and a /pulse panel of subagents. It only watches; it adds no tools and changes no prompts.",
+      "version": "0.3.0",
+      "category": "mod"
+    },
+    {
+      "name": "pulse-cache-tax",
+      "source": "./pulse-cache-tax",
+      "description": "Keeps the one-hour prompt cache warm during /keepwarm windows and holds a cold send once with its estimated rewrite cost. Pinging runs only after /keepwarm. Fork of karanb192/cache-tax.",
+      "version": "2.2.1",
+      "category": "mod"
+    },
+    {
+      "name": "pulse-filetree",
+      "source": "./pulse-filetree",
+      "description": "An IDE-style file tree for Claude Code that shows what Claude is doing and where in files",
+      "version": "0.2.25",
+      "category": "mod"
+    },
+    {
+      "name": "pulse-reflect",
+      "source": "./pulse-reflect",
+      "description": "claude-reflect as a Claude Code mod: a model check on each short prompt finds reusable corrections (any language); a band above the prompt saves them to CLAUDE.md on one press",
+      "version": "3.3.0",
+      "category": "mod"
+    }
+  ]
+}
