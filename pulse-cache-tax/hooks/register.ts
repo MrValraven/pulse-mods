@@ -1,5 +1,9 @@
-import type { EngineInterface, Register } from 'claude-code'
+import type { EngineInterface, Register, RenderChildren, RenderElement } from 'claude-code'
+import { fmtDuration, fmtTok, fmtUsd, HOLD_TITLE_H, holdBarsAlt, holdBarsHeight, holdBarsSvg, holdTitleAlt, holdTitleSvg, isSoonCold, meterAlt, meterSvg, METER_H, minutesLeft, textMeter } from './draw'
+import type { Hold, Warmth } from './draw'
 import { statusIcons } from './status-icons'
+
+export { fmtDuration }
 
 const TTL_MS = 60 * 60 * 1000
 const PING_AFTER_MS = 50 * 60 * 1000
@@ -7,6 +11,8 @@ const MIN_PING_MS = 60 * 1000
 const DEFAULT_WINDOW_MS = 6 * 60 * 60 * 1000
 const BIG_TOKENS = 50000
 const PING_PROMPT = 'Reply with the single word: warm'
+// The band redraws once a minute while a window is armed, so its countdowns stay true.
+const TICK_MS = 60 * 1000
 const KEY_DEADLINE = 'deadline'
 const KEY_EVERY = 'every'
 const KEY_GUARD = 'guard'
@@ -27,6 +33,8 @@ const PRICES: Array<[string, number, number, number]> = [
 type PingRecord = { at: number; read: number; write: number; usd: number | null; warm: boolean }
 type Miss = { at: number; tokens: number; usd: number | null }
 type GuardMode = 'refuse' | 'warn'
+/** A cold send the guard dropped: kept in memory only, for the band's Send anyway, until the next turn. */
+type HeldPrompt = { text: string; isResendable: boolean }
 
 export type State = {
   hasBand: boolean
@@ -40,11 +48,18 @@ export type State = {
   compacted: boolean
   guard: GuardMode
   ackedAt: number
+  /** The guard's ack for prompts the person did not type (notifications, scheduled prompts): one drop, then the next goes through. */
+  notificationAckedAt: number
   coldWritePending: boolean
   misses: Miss[]
   pending: { cancel: () => void } | null
   last: PingRecord | null
   stopped: string | null
+  isPinging: boolean
+  held: HeldPrompt | null
+  ticker: { cancel: () => void } | null
+  /** The last request the ticker's phase was set from. */
+  tickerAnchor: number
 }
 
 function priceOf(model: string | null): [number, number, number] | null {
@@ -57,22 +72,6 @@ export function parseDuration(text: string): number | null {
   const m = /^(?:(\d+)h)?(?:(\d+)m)?$/.exec(text.trim())
   if (!m || (m[1] === undefined && m[2] === undefined)) return null
   return (Number(m[1] ?? 0) * 60 + Number(m[2] ?? 0)) * 60 * 1000
-}
-
-export function fmtDuration(ms: number): string {
-  const total = Math.max(0, Math.round(ms / 60000))
-  const h = Math.floor(total / 60)
-  const m = total % 60
-  if (h >= 48) return `${Math.floor(h / 24)}d ${h % 24}h`
-  return h > 0 ? `${h}h${String(m).padStart(2, '0')}m` : `${m}m`
-}
-
-function fmtUsd(usd: number | null): string {
-  return usd == null ? 'n/a' : '$' + (usd >= 100 ? usd.toFixed(0) : usd.toFixed(2))
-}
-
-function fmtTok(n: number): string {
-  return n >= 1e6 ? (n / 1e6).toFixed(1) + 'M' : n >= 1000 ? Math.round(n / 1000) + 'k' : String(n)
 }
 
 function coldUsd(s: State): number | null {
@@ -125,8 +124,10 @@ export function resetForClear(s: State) {
   s.lastRequestAt = 0
   s.compacted = false
   s.ackedAt = 0
+  s.notificationAckedAt = 0
   s.coldWritePending = false
   s.misses = []
+  s.held = null
   disarm(s)
 }
 
@@ -156,6 +157,91 @@ function statusText(s: State, now: number): string | undefined {
 function updateStatus($: EngineInterface, s: State, now: number) {
   if (s.hasBand) $.ui.invalidate('ui.render')
   else $.ui.status(statusText(s, now))
+  syncTicker($, s, now)
+}
+
+function redraw($: EngineInterface, s: State) {
+  if (s.hasBand) $.ui.invalidate('ui.render')
+}
+
+/** Redraws the band each minute while a window is armed or a send is held; the status line keeps its own updates. */
+function syncTicker($: EngineInterface, s: State, now: number) {
+  const shouldTick = s.hasBand && (s.deadline > now || isHeld(s, now))
+  // A new request moves the minute boundary, so a ticker set from the old one starts again.
+  if (s.ticker && (!shouldTick || s.tickerAnchor !== s.lastRequestAt)) {
+    s.ticker.cancel()
+    s.ticker = null
+  }
+  if (!shouldTick || s.ticker) return
+  // The meter counts whole minutes from the last request, so the redraw lands as its minute turns.
+  s.tickerAnchor = s.lastRequestAt
+  const intoMinute = s.lastRequestAt ? (((now - s.lastRequestAt) % TICK_MS) + TICK_MS) % TICK_MS : 0
+  s.ticker = $.clock.after(Math.max(1000, TICK_MS - intoMinute), () => {
+    s.ticker = null
+    $.ui.invalidate('ui.render')
+    void $.clock.now().then(at => syncTicker($, s, at))
+  })
+}
+
+/** A cold send the guard dropped, still waiting for the person to send it again or cancel. */
+function isHeld(s: State, now: number): boolean {
+  return s.held !== null && s.guard === 'refuse' && s.ackedAt !== 0 && s.ackedAt === s.lastRequestAt && isCold(s, now)
+}
+
+/** What the band's meter shows; null while nothing is known about the cache, or keepwarm stopped. */
+function warmthOf(s: State, now: number): Warmth | null {
+  if (s.stopped || !s.lastRequestAt || s.compacted) return null
+  const usd = coldUsd(s)
+  const coldPrice = usd == null ? null : fmtUsd(usd)
+  if (isCold(s, now)) return { tone: 'cold', msLeft: 0, ttlMs: TTL_MS, pingMsLeft: null, coldPrice }
+  const isPingAhead = s.deadline > 0 && s.every < TTL_MS && s.lastRequestAt + s.every < s.deadline
+  return { tone: s.isPinging ? 'pinging' : 'warm', msLeft: s.lastRequestAt + TTL_MS - now, ttlMs: TTL_MS, pingMsLeft: isPingAhead ? TTL_MS - s.every : null, coldPrice }
+}
+
+/** The band's words after the state: what happens next, the window, the last ping. The status line's phrases, reordered; the state word already says cold. */
+function bandDetails(s: State, now: number): string {
+  if (s.stopped) return `${s.stopped} · /keepwarm starts it again`
+  const next = !s.lastRequestAt ? 'waiting for the first turn'
+    : s.compacted ? 'waiting for the first turn after compaction'
+    : isCold(s, now) ? `first ping ${fmtDuration(s.every)} after the next turn`
+    : s.isPinging ? 'pinging now'
+    : `ping in ${fmtDuration(s.lastRequestAt + s.every - now)}`
+  const pingText = s.last ? ` · last ping read ${fmtTok(s.last.read)} ${fmtUsd(s.last.usd)}` : ''
+  return `${next} · keepwarm ${fmtDuration(s.deadline - now)} left${pingText}`
+}
+
+/** The band's Send anyway: the same as sending the held message again from the prompt. */
+async function sendHeld($: EngineInterface, s: State) {
+  const held = s.held
+  if (!held) return
+  // Taken at once, so a second press finds nothing left to send.
+  s.held = null
+  if (!isCold(s, await $.clock.now()) || s.guard !== 'refuse' || s.ackedAt === 0 || s.ackedAt !== s.lastRequestAt) return
+  const ackedAt = s.ackedAt
+  s.ackedAt = 0
+  s.coldWritePending = true
+  redraw($, s)
+  let failure: string | null = null
+  try {
+    const result = await $.prompt.submit({ text: held.text, asUser: true })
+    if (result.drop !== undefined) failure = result.drop
+  } catch (err) {
+    failure = err instanceof Error ? err.message : String(err)
+  }
+  if (failure === null) return
+  // Nothing entered: the card comes back as it was.
+  s.held = held
+  s.ackedAt = ackedAt
+  s.coldWritePending = false
+  $.ui.log(`cache-tax: the resend did not go through, ${failure}`)
+  redraw($, s)
+}
+
+/** The band's Discard message: the message stays unsent and the guard holds the next cold send again. */
+function cancelHeld($: EngineInterface, s: State) {
+  s.held = null
+  s.ackedAt = 0
+  redraw($, s)
 }
 
 function disarm(s: State) {
@@ -223,12 +309,16 @@ async function ping($: EngineInterface, s: State) {
   // A turn in the meantime re-armed the timer; this callback is stale.
   if (isCold(s, now)) return arm($, s)
   if (now - s.lastRequestAt < s.every - 1000) return
+  s.isPinging = true
+  redraw($, s)
   let reply
   try {
     reply = await $.model.fork({ prompt: PING_PROMPT })
   } catch (err) {
+    s.isPinging = false
     return stop($, s, `the ping failed, ${err instanceof Error ? err.message : String(err)}`)
   }
+  s.isPinging = false
   if (reply === null) return stop($, s, 'the engine did not send the ping, either the snapshot was cold or the API call failed')
   if (reply.isAnswered === false) {
     const reason = reply.reason === 'nothing-to-fork' ? 'no conversation to warm yet'
@@ -251,7 +341,7 @@ async function ping($: EngineInterface, s: State) {
 /** The reply to an arming command; on a cold cache it says when the first ping can come. */
 function armedText(s: State, now: number, windowMs: number): string {
   if (isCold(s, now)) return `keepwarm on for ${fmtDuration(windowMs)}. The cache is cold now, so the first ping comes ${fmtDuration(s.every)} after the next turn`
-  return `keepwarm on for ${fmtDuration(windowMs)}, a ping ${fmtDuration(s.every)} after each idle stretch keeps the cache read, not re-written`
+  return `keepwarm on for ${fmtDuration(windowMs)}, a ping ${fmtDuration(s.every)} after each idle stretch keeps the cache warm, so the next turn reads it at the cache-read rate`
 }
 
 async function startWindow($: EngineInterface, s: State, windowMs: number, every: number) {
@@ -288,7 +378,8 @@ function card(s: State, now: number): string {
 export function freshState(): State {
   return {
     hasBand: false, sid: '', deadline: 0, every: PING_AFTER_MS, always: false, lastRequestAt: 0, lastModel: null, ctx: 0, compacted: false,
-    guard: 'refuse', ackedAt: 0, coldWritePending: false, misses: [], pending: null, last: null, stopped: null,
+    guard: 'refuse', ackedAt: 0, notificationAckedAt: 0, coldWritePending: false, misses: [], pending: null, last: null, stopped: null,
+    isPinging: false, held: null, ticker: null, tickerAnchor: 0,
   }
 }
 
@@ -306,31 +397,95 @@ export const register: Register = on => {
     return result
   })
 
+  // The band: one row for the cache (icon, state, what comes next, a warmth meter), and a decision card while a cold send is held.
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     const rest = await next(e)
     if (!s.hasBand || e.props.hasSurvey) return rest
     const now = await $.clock.now()
-    const text = statusText(s, now)
-    if (!text || (s.deadline && now >= s.deadline)) return rest
-    const state = s.stopped ? 'stopped' : !s.lastRequestAt || s.compacted ? 'unknown' : isCold(s, now) ? 'cold' : 'warm'
-    const color = noColor ? undefined : state === 'warm' ? 'success' : state === 'cold' ? (light ? '#c15f3c' : '#d97757') : undefined
-    const { Box, Text } = $.ui.resolve(e)
-    const asset = statusIcons[light ? 'light' : 'dark'][state === 'warm' || state === 'cold' ? state : 'neutral']
-    const icon = noColor ? Text({ bold: true, children: ['[>]'] })
-      : e.surface === 'terminal' ? $.ui.resolve(e).Image({ source: { png: asset.png }, columns: 3, rows: 1, alt: '[>]' })
-      : e.surface === 'desktop' ? $.ui.resolve(e).Svg({ source: asset.svg, width: 18, height: 18, alt: 'Cache Tax' })
-      : Text({ color, bold: true, children: ['[>]'] })
-    return Box({ flexDirection: 'column', children: [
-      rest,
-      Box({ flexDirection: 'row', alignItems: 'center', children: [
+    const hasRow = Boolean(statusText(s, now)) && !(s.deadline && now >= s.deadline)
+    const isHeldNow = isHeld(s, now)
+    if (!hasRow && !isHeldNow) return rest
+    const { Box, Text, Button } = $.ui.resolve(e)
+    const coral = noColor ? undefined : light ? '#c15f3c' : '#d97757'
+    // Desktop draws the meter and the card as images; the terminal, and NO_COLOR anywhere, draws them as text.
+    const isGraphic = e.surface === 'desktop' && !noColor
+    const drawSvg = (source: string, alt: string, width: number, height: number): RenderElement | null =>
+      e.surface === 'desktop' && !noColor ? $.ui.resolve(e).Svg({ source, alt, width, height }) : null
+    const bandWidth = Math.max(240, Math.min(1600, (e.props.bodyColumns || 80) * 8 - 8))
+    const children: RenderChildren[] = [rest]
+
+    if (hasRow) {
+      const state = s.stopped ? 'stopped' : !s.lastRequestAt || s.compacted ? 'unknown' : isCold(s, now) ? 'cold' : 'warm'
+      const color = noColor ? undefined : state === 'warm' ? 'success' : state === 'cold' ? coral : undefined
+      const asset = statusIcons[light ? 'light' : 'dark'][state === 'warm' || state === 'cold' ? state : 'neutral']
+      const icon = noColor ? Text({ bold: true, children: ['[>]'] })
+        : e.surface === 'terminal' ? $.ui.resolve(e).Image({ source: { png: asset.png }, columns: 3, rows: 1, alt: '[>]' })
+        : e.surface === 'desktop' ? $.ui.resolve(e).Svg({ source: asset.svg, width: 18, height: 18, alt: 'Cache Tax' })
+        : Text({ color, bold: true, children: ['[>]'] })
+      // While a send is held its card shows the price, so the row leaves the meter out.
+      const warmth = isHeldNow ? null : warmthOf(s, now)
+      const meterWidth = Math.max(bandWidth < 300 ? 88 : 104, Math.min(190, Math.round(bandWidth * 0.3)))
+      const meterImage = warmth ? drawSvg(meterSvg(warmth, meterWidth), meterAlt(warmth), meterWidth, METER_H) : null
+      const meterCells = e.props.bodyColumns >= 70 ? 10 : e.props.bodyColumns >= 50 ? 6 : 0
+      const meterText: RenderChildren[] = warmth && !meterImage && meterCells ? (() => {
+        const cells = textMeter(warmth, meterCells)
+        const fillColor = noColor ? undefined : isSoonCold(warmth) ? coral : 'success'
+        const label = warmth.tone === 'pinging' ? 'pinging'
+          : warmth.tone === 'warm' ? `${minutesLeft(warmth.msLeft)}m left`
+          : warmth.coldPrice ? `≈${warmth.coldPrice} to re-write` : 'price unknown'
+        return [
+          ' ',
+          ...(cells.filled ? [Text({ color: fillColor, children: [cells.filled] }), Text({ dimColor: true, children: [cells.empty] }), ' '] : []),
+          Text({ bold: true, color: warmth.tone === 'cold' ? coral : undefined, children: [label] }),
+        ]
+      })() : []
+      // On desktop the icon's alt names the mod, so the row leads with the state and keeps it in view when narrow.
+      const line = Text({ wrap: 'truncate-end', children: [
+        ...(isGraphic ? [] : [Text({ dimColor: true, children: ['cache-tax'] }), ' ']),
+        Text({ color, bold: true, children: [state] }),
+        ...meterText,
+        Text({ dimColor: true, children: [` · ${bandDetails(s, now)}`] }),
+      ] })
+      children.push(Box({ flexDirection: 'row', alignItems: 'center', gap: 1, children: [
         Box({ flexShrink: 0, children: [icon] }),
-        Text({ children: [
-          ' cache-tax · ',
-          Text({ color, bold: true, children: [state] }),
-          ` · ${text}`,
-        ] }),
-      ] }),
-    ] })
+        Box({ flexGrow: 1, flexShrink: 1, children: [line] }),
+        ...(meterImage ? [Box({ flexShrink: 0, children: [meterImage] })] : []),
+      ] }))
+    }
+
+    if (isHeldNow && s.held) {
+      const hold: Hold = { coldFor: fmtDuration(now - s.lastRequestAt - TTL_MS), rewriteUsd: coldUsd(s), warmUsd: warmUsd(s), tokens: s.ctx.toLocaleString('en-US') }
+      const rewrite = hold.rewriteUsd == null ? null : fmtUsd(hold.rewriteUsd)
+      const buttons = Box({ flexDirection: 'row', alignItems: 'center', gap: 1, children: [
+        ...(s.held.isResendable
+          ? [Button({ key: 'cache-tax-send', label: rewrite ? `Send anyway ≈${rewrite}` : 'Send anyway', variant: 'primary', onPress: () => { void sendHeld($, s) } })]
+          : []),
+        Button({ key: 'cache-tax-cancel', label: 'Discard message', onPress: () => cancelHeld($, s) }),
+        Text({ dimColor: true, wrap: 'truncate-end', children: [s.held.isResendable
+          ? 'Or /clear and paste a summary. /keepwarm after sending keeps it warm.'
+          : 'It had attachments or @-mentions, so send it again from the prompt.'] }),
+      ] })
+      // The full card needs about seven rows; a shorter band gets the one-line card.
+      const cardWidth = Math.min(bandWidth, 560)
+      const title = e.props.maxRows >= 7 ? drawSvg(holdTitleSvg(hold, cardWidth), holdTitleAlt(hold), cardWidth, HOLD_TITLE_H) : null
+      const bars = title ? drawSvg(holdBarsSvg(hold, cardWidth), holdBarsAlt(hold), cardWidth, holdBarsHeight(hold)) : null
+      if (title && bars) {
+        children.push(Box({ flexDirection: 'column', gap: 1, marginTop: hasRow ? 1 : 0, children: [title, buttons, bars] }))
+      } else {
+        const cost = rewrite
+          ? `sending re-writes ≈${rewrite}${hold.warmUsd == null ? '' : `, a warm turn ≈${fmtUsd(hold.warmUsd)}`}`
+          : `sending re-writes up to ${hold.tokens} tokens, no price for this model`
+        children.push(Box({ flexDirection: 'column', children: [
+          Text({ wrap: 'truncate-end', children: [
+            Text({ bold: true, color: coral, children: ['Message held'] }),
+            Text({ dimColor: true, children: [` · ${cost} · cold for ${hold.coldFor}`] }),
+          ] }),
+          buttons,
+        ] }))
+      }
+    }
+
+    return Box({ flexDirection: 'column', children })
   })
 
   on('session.start', async ($, e, next) => {
@@ -388,6 +543,10 @@ export const register: Register = on => {
       updateStatus($, s, await $.clock.now())
       return r
     }
+    // A held message belongs to the conversation before the resume.
+    s.held = null
+    s.ackedAt = 0
+    s.notificationAckedAt = 0
     const line = seedFromResume(s, e, await $.clock.now())
     // The resume payload may omit the model; without it the guard cannot price the cold write.
     if (!s.lastModel) s.lastModel = await $.session.model()
@@ -444,7 +603,7 @@ export const register: Register = on => {
     return { text: card(s, now) }
   })
 
-  // The message that pays. Only its first character is read.
+  // The message that pays. Its text is read for a leading slash; a held one stays in memory for the band's Send anyway until the next turn.
   on('prompt.submit', async ($, e, next) => {
     if (e.origin.kind === 'plugin') return next(e)
     if (typeof e.text !== 'string' || e.text.trimStart().startsWith('/')) return next(e)
@@ -455,13 +614,34 @@ export const register: Register = on => {
       s.coldWritePending = true
       return next(e)
     }
+    // Only the person's own message is held or let through on a resend. A prompt they did not type keeps the
+    // guard's old rule on its own ack (dropped once, the next goes through), so it never touches the held card.
+    const isTyped = e.origin.kind === 'composer' || e.origin.kind === 'bridge'
+    if (!isTyped) {
+      if (s.notificationAckedAt === s.lastRequestAt) {
+        s.notificationAckedAt = 0
+        s.coldWritePending = true
+        return next(e)
+      }
+      s.notificationAckedAt = s.lastRequestAt
+      return { drop: `cache-tax: ${guardText(s, now)} Send it again to pay it, then /keepwarm holds the cache. Or /clear and start from a note.` }
+    }
     if (s.ackedAt === s.lastRequestAt) {
       s.ackedAt = 0
       s.coldWritePending = true
+      s.held = null
+      redraw($, s)
       return next(e)
     }
     s.ackedAt = s.lastRequestAt
-    return { drop: `cache-tax: ${guardText(s, now)} Send it again to pay it, then /keepwarm holds the cache. Or /clear and start from a note.` }
+    // A plugin's resend expands no attachments or @-mentions, so those are left for the person to send again.
+    s.held = { text: e.text, isResendable: !e.attachments?.length && !/(^|\s)@\S/.test(e.text) }
+    redraw($, s)
+    syncTicker($, s, now)
+    const nextStep = !s.hasBand ? 'Send it again to pay it, then /keepwarm holds the cache. Or /clear and start from a note.'
+      : s.held.isResendable ? 'Send it again, or use Send anyway below.'
+      : 'Send it again from the prompt to pay it.'
+    return { drop: `cache-tax: ${guardText(s, now)} ${nextStep}` }
   })
 
   on('turn.step', async function* ($, e, next) {
@@ -479,6 +659,8 @@ export const register: Register = on => {
     if (now - s.lastRequestAt > e.durationMs) s.lastRequestAt = now
     s.compacted = false
     s.ackedAt = 0
+    s.notificationAckedAt = 0
+    s.held = null
     const u = e.usage
     if (u) {
       if (u.model) s.lastModel = u.model
@@ -509,6 +691,8 @@ export const register: Register = on => {
       s.compacted = true
       s.ctx = 0
       s.ackedAt = 0
+      s.notificationAckedAt = 0
+      s.held = null
       disarm(s)
       await arm($, s)
     }
