@@ -4,4 +4,12 @@ commit 569c5283d9a0a7ee7938df85bb32e4f48cbb8c86, Copyright 2026 Anthropic PBC,
 used under the Apache License 2.0 in LICENSE.
 
 Changes from the original: the plugin is renamed blast-radius -> pulse-blast-radius
-in .claude-plugin/plugin.json. Every other file is unchanged.
+in .claude-plugin/plugin.json.
+
+Modified by MrValraven in version 0.3.0 of pulse-mods, in these areas: the command
+reading (a quote-aware splitter in hooks/split.mjs, and the classifier moved to
+hooks/classify.mjs with new file, git, database and infrastructure patterns and
+the wrappers it reads through), measuring every risky part of a command line,
+the nothing-to-discard pass, the pane layout and the pulse palette, the band
+notification, the /blast-radius decision log and help, the measureMigrations
+setting, the tests in tests/, the README and the plugin manifest.
