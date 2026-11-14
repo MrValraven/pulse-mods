@@ -23,6 +23,32 @@ claude plugin install pulse-progress@pulse-mods --scope user
 
 To work on the mods, clone the repo and add the clone instead (`claude plugin marketplace add ./pulse-mods`). Claude Code then installs from your local files.
 
+## Updating the mods
+
+Each session runs a cached copy of every mod version. A merged pull request reaches your sessions after these three steps.
+
+1. Refresh the marketplace. If you added it from GitHub:
+
+   ```bash
+   claude plugin marketplace update pulse-mods
+   ```
+
+   If you added a local clone, Claude Code reads the mods from that folder, so pull it first:
+
+   ```bash
+   git -C path/to/pulse-mods pull --ff-only && claude plugin marketplace update pulse-mods
+   ```
+
+2. Update the mods you have installed (leave out any you don't use):
+
+   ```bash
+   for mod in pulse-progress pulse-cache-tax pulse-filetree pulse-reflect pulse-blast-radius; do claude plugin update "$mod@pulse-mods"; done
+   ```
+
+   `claude plugin list` shows the version each mod is on.
+
+3. Start a new session. In the Claude desktop app, open a new conversation in the Code tab. In the terminal, quit and run `claude` again. `/reload-plugins` in a session that is already open keeps drawing the old version.
+
 ## Shipping a change
 
 Sessions run a cached copy of each version, so every change to a mod needs a version bump:
@@ -31,7 +57,7 @@ Sessions run a cached copy of each version, so every change to a mod needs a ver
 2. Run `node scripts/check-versions.mjs origin/main`. It fails when the two versions disagree, when a mod folder is missing from the marketplace, or when a mod changed without a bump. The same check runs on every pull request.
 3. Add a line to [CHANGELOG.md](CHANGELOG.md), open a pull request and merge it.
 4. Tag the release as `<mod>-v<version>`, for example `pulse-reflect-v3.3.0`.
-5. Run `claude plugin update <mod>@pulse-mods`, then start a new session.
+5. Follow [Updating the mods](#updating-the-mods) to load the new version.
 
 ## Licence
 
