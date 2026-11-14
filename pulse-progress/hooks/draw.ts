@@ -11,8 +11,7 @@ export const JADE_SOFT = '#7cd7ad'
 // Lilac is the one non-token colour: peach (--accent-soft) was unreadable as text on cream.
 export const LILAC = '#8a72cf'
 export const MUTED = '#9a8fa8'
-export const FONT = "'DM Sans',-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif"
-export const SERIF = 'Fraunces,Georgia,serif'
+export const FONT = "'JetBrains Mono','Geist Mono','IBM Plex Mono','SF Mono',ui-monospace,Menlo,'Source Code Pro',Consolas,monospace"
 
 // ---------------------------------------------------------------------------
 // Roles: what a subagent type looks like. Unknown types are pride crabs.
@@ -128,8 +127,8 @@ export const xml = (s: string): string =>
   s.replace(/[&<>"]/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[ch] ?? ch)
 
 const WIDE = /[ᄀ-ᅟ⺀-〾ぁ-㏿㐀-䶿一-鿿가-힣豈-﫿！-｠\u{1F300}-\u{1FAFF}]/u
-const charEm = (ch: string): number =>
-  WIDE.test(ch) ? 1 : /[0-9]/.test(ch) ? 0.67 : /[\s.,:;'|!il()[\]]/.test(ch) ? 0.3 : /[A-Zmw@%]/.test(ch) ? 0.72 : 0.56
+// Monospace: every character is 0.6 em, and CJK, fullwidth and emoji take two cells.
+const charEm = (ch: string): number => (WIDE.test(ch) ? 1.2 : 0.6)
 export const textWidth = (s: string, size: number): number => [...s].reduce((width, ch) => width + charEm(ch) * size, 0)
 
 export const fitText = (s: string, size: number, maxW: number): string => {
@@ -286,7 +285,7 @@ export const bandSvg = (b: BarState, W: number, at: number): string => {
   // A band that was hidden at zero runs has nothing to tween from.
   const isTweening = b.fromTotal > 0 && isTweenAt(b.changedAt, at)
   const title = 'Pulse'
-  const BAR_X = Math.round(16 + textWidth(title, 14) + 12)
+  const BAR_X = Math.round(16 + textWidth(title, 13) + 12)
   const BAR_W = Math.max(60, W - BAR_X - 46 - CRAB_W)
   const fillW = Math.round(BAR_W * p.ratio)
   const fromFillW = isTweening ? Math.round(BAR_W * Math.min(1, Math.max(0, b.fromRatio))) : fillW
@@ -367,7 +366,7 @@ ${tweens}
 <linearGradient id="g" gradientUnits="userSpaceOnUse" x1="0" y1="0" x2="${BAR_W}" y2="0"><stop offset="0" stop-color="${CORAL}"/><stop offset=".5" stop-color="${ROSE}"/><stop offset="1" stop-color="${JADE}"/></linearGradient>
 <mask id="m" maskUnits="userSpaceOnUse" x="0" y="0" width="${BAR_W}" height="${BAR_H}">${mask}</mask>${isLabelTween ? `<clipPath id="pc">${pillRect('pw', '')}</clipPath>` : ''}</defs>
 <circle class="dt" cx="5" cy="${H / 2}" r="4" fill="${dot}"/>
-<text class="tx" x="16" y="${H / 2 + 5}" font-family="${SERIF}" font-size="14" font-style="italic" font-weight="600">${title}</text>
+<text class="tx" x="16" y="${H / 2 + 5}" font-family="${FONT}" font-size="13" font-weight="600">${title}</text>
 <g transform="translate(${BAR_X},${(H - BAR_H) / 2})">
 <rect class="k" width="${BAR_W}" height="${BAR_H}" rx="${BAR_H / 2}"/>
 <g clip-path="url(#c)"><g clip-path="url(#r)">${fillRects}</g></g>
@@ -517,10 +516,10 @@ export const headerSvg = (W: number, list: AgentRun[], at: number, clockAt: numb
       ? checkMark(7, 15)
       : `<circle class="k" cx="6" cy="15" r="4"/>`
   const stopped = !working && failed
-    ? `<tspan class="t-fail" dx="8" font-family="${FONT}" font-size="11.5" font-style="normal" font-weight="600">${failed} stopped</tspan>`
+    ? `<tspan class="t-fail" dx="8" font-family="${FONT}" font-size="11.5" font-weight="600">${failed} stopped</tspan>`
     : ''
-  const status = `${mark}<text class="tx" x="18" y="20" font-family="${SERIF}" font-size="15" font-style="italic" font-weight="600">${xml(statusPhrase(list))}${stopped}</text>
-<text x="${W}" y="22" text-anchor="end"><tspan class="m" font-family="${FONT}" font-size="11">elapsed</tspan><tspan class="tx" dx="6" font-family="${SERIF}" font-size="20" font-weight="600"${TABULAR}>${fmtTime(sums.time)}</tspan></text>`
+  const status = `${mark}<text class="tx" x="18" y="20" font-family="${FONT}" font-size="13.5" font-weight="600">${xml(statusPhrase(list))}${stopped}</text>
+<text x="${W}" y="22" text-anchor="end"><tspan class="m" font-family="${FONT}" font-size="11">elapsed</tspan><tspan class="tx" dx="6" font-family="${FONT}" font-size="17" font-weight="600"${TABULAR}>${fmtTime(sums.time)}</tspan></text>`
   if (!list.length) return { source: svg(W, 30, status, clockAt), height: 30 }
 
   // The stats row: the first layout that fits, from the fullest to the most compact.
