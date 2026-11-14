@@ -2,6 +2,14 @@
 
 One section per release. Each release is tagged `<mod>-v<version>`.
 
+## 2026-11-14
+
+- pulse-progress 0.4.0: monospace type throughout, with semibold mono titles in place of Fraunces italic.
+- pulse-cache-tax 2.4.0: monospace type on the warmth meter and the held-message card.
+- pulse-reflect 3.5.0: the learned-rule card in monospace, rule text at 14 px.
+- pulse-filetree 0.5.0: the desktop pane draws its text in the monospaced face.
+- pulse-blast-radius 0.2.0: the desktop band and pane draw their text in the monospaced face.
+
 ## 2026-10-13
 
 - pulse-blast-radius 0.1.0: first publish, holds risky Bash commands and shows what they would change before Proceed or Cancel.
