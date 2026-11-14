@@ -1,12 +1,35 @@
 {
   "name": "pulse-reflect",
-  "version": "3.5.0",
+  "version": "3.6.0",
   "description": "claude-reflect as a Claude Code mod: a model check on each short prompt finds reusable corrections (any language); a band above the prompt saves them to CLAUDE.md on one press",
   "types": "./types/index.d.ts",
   "author": {
-    "name": "Bayram Annakov",
-    "url": "https://github.com/bayramannakov"
+    "name": "MrValraven"
   },
-  "repository": "https://github.com/bayramannakov/claude-reflect",
+  "repository": "https://github.com/MrValraven/pulse-mods",
+  "userConfig": {
+    "model": {
+      "type": "string",
+      "title": "Check model",
+      "description": "The model that checks each short prompt for a rule: an alias such as haiku or sonnet, or a full model id",
+      "default": "haiku"
+    },
+    "minConfidence": {
+      "type": "number",
+      "title": "Minimum confidence",
+      "description": "Rules the check is less sure of than this (0 to 1) are dropped. Higher shows fewer, surer rules",
+      "default": 0.7
+    },
+    "ruleLanguage": {
+      "type": "string",
+      "title": "Rule language",
+      "description": "english: the check writes every rule in English. same as prompt: it writes the rule in the language of the prompt it came from",
+      "default": "english",
+      "options": [
+        "english",
+        "same as prompt"
+      ]
+    }
+  },
   "license": "MIT"
 }
