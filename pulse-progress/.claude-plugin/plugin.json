@@ -1,8 +1,10 @@
 {
   "name": "pulse-progress",
-  "version": "0.4.0",
-  "description": "Cosmetic mod: a QueerPulse-coloured progress band above the prompt and a /pulse panel of subagents. It only watches; it adds no tools and changes no prompts.",
-  "author": { "name": "QueerPulse" },
+  "version": "0.5.0",
+  "description": "A QueerPulse-coloured progress band above the prompt and a /pulse panel of subagents. It adds no tools and changes no prompts; /pulse mods checks GitHub for pulse-mods updates once a day.",
+  "author": {
+    "name": "MrValraven"
+  },
   "types": "./types/index.d.ts",
   "userConfig": {
     "autoOpen": {
@@ -10,7 +12,20 @@
       "title": "Open the agents panel",
       "description": "once: open it by itself the first time a subagent starts in a session; never: only with /pulse",
       "default": "once",
-      "options": ["once", "never"]
+      "options": [
+        "once",
+        "never"
+      ]
+    },
+    "updateCheck": {
+      "type": "string",
+      "title": "Check for pulse mods updates",
+      "description": "on: once a day at session start, compare the installed pulse mods with GitHub and show a toast when one is out of date; off: only /pulse mods checks",
+      "default": "on",
+      "options": [
+        "on",
+        "off"
+      ]
     }
   },
   "license": "MIT"

@@ -74,21 +74,106 @@ export const endOf = (a: AgentRun, at: number): number => a.endedAt ?? Math.max(
 export const elapsed = (a: AgentRun, at: number): number => endOf(a, at) - a.startedAt
 export const ctxOf = (a: AgentRun): number => (a.contextMax ? Math.min(100, Math.round((a.contextTokens / a.contextMax) * 100)) : 0)
 
-export type Totals = { cost: number; tokens: number; time: number }
+// `time` is active time: the union of the runs' intervals, so idle gaps between runs do not count.
+// `unpriced` counts the runs whose model has no price; their cost is left out of `cost`.
+export type Totals = { cost: number; tokens: number; time: number; unpriced: number }
 
-export const totals = (list: AgentRun[], at: number): Totals => {
-  const start = Math.min(...list.map(a => a.startedAt))
-  const end = Math.max(...list.map(a => endOf(a, at)))
-  return {
-    cost: list.reduce((sum, a) => sum + a.costUsd, 0),
-    tokens: list.reduce((sum, a) => sum + a.tokens, 0),
-    time: list.length ? end - start : 0,
+export const activeTime = (list: AgentRun[], at: number): number => {
+  const intervals = list.map(a => [a.startedAt, endOf(a, at)] as const).sort((left, right) => left[0] - right[0])
+  let total = 0
+  let spanStart = -Infinity
+  let spanEnd = -Infinity
+  for (const [start, end] of intervals) {
+    if (start > spanEnd) {
+      if (spanEnd > spanStart) total += spanEnd - spanStart
+      spanStart = start
+      spanEnd = end
+    } else spanEnd = Math.max(spanEnd, end)
   }
+  if (spanEnd > spanStart) total += spanEnd - spanStart
+  return total
 }
 
-// The band's progress: finished runs out of all runs since the last dismiss.
+export const totals = (list: AgentRun[], at: number): Totals => ({
+  cost: list.reduce((sum, a) => sum + a.costUsd, 0),
+  tokens: list.reduce((sum, a) => sum + a.tokens, 0),
+  time: activeTime(list, at),
+  unpriced: list.filter(a => a.isPriceUnknown).length,
+})
+
+// The note totals carry when some runs had no price.
+export const unpricedNote = (count: number): string => (count ? `${count} ${count === 1 ? 'run' : 'runs'} without a price` : '')
+// A run's cost as text: the estimate, or "price unknown" when its model has no row in prices.ts.
+export const costText = (a: AgentRun): string => (a.isPriceUnknown ? 'price unknown' : '≈' + fmtCost(a.costUsd))
+
+// An errored turn's own words about the error, when its final text holds them: the first line, if it reads as
+// an error (a status code, "error", "overloaded", a rate limit, a timeout), without a leading "API Error:".
+// turn.complete carries no HTTP status of its own, so this is the most the run can say.
+export const errorDetailOf = (answer: string | undefined): string | undefined => {
+  const line = (answer ?? '').split('\n').find(text => text.trim())?.trim() ?? ''
+  if (!line || !/error|\b[45]\d\d\b|overloaded|rate.?limit|timed? ?out/i.test(line)) return undefined
+  const detail = line.replace(/^api error:?\s*/i, '').trim()
+  return detail ? (detail.length > 80 ? `${detail.slice(0, 79)}…` : detail) : undefined
+}
+
+// Why a run stopped, in words, from `turn.complete`'s reason, the last step's stop reason, and any detail the end held.
+export const stopLabelOf = (endReason: string | undefined, lastStepStop?: string | null, detail?: string): string => {
+  const withDetail = (label: string) => (detail ? `${label}: ${detail}` : label)
+  if (endReason === 'aborted') return 'Cancelled by you'
+  if (endReason === 'refusal') return withDetail('Refused by the model')
+  if (endReason === 'error') {
+    if (lastStepStop === 'model_context_window_exceeded') return 'Context limit reached'
+    if (lastStepStop === 'max_tokens') return 'Output limit reached'
+    return withDetail('API error')
+  }
+  return endReason ? `Stopped: ${endReason}` : 'Stopped'
+}
+export const runStopLabel = (a: AgentRun): string => stopLabelOf(a.endReason, a.lastStepStop, a.endDetail)
+
+// The band's progress: finished runs out of all runs since the last clear.
 export const progressOf = (done: number, total: number) => ({ done, total, ratio: total ? done / total : 0, isFinished: total > 0 && done === total })
-export const progress = (list: AgentRun[]) => progressOf(list.filter(a => a.status !== 'running').length, list.length)
+export const progress = (list: AgentRun[]) => ({
+  ...progressOf(list.filter(a => a.status !== 'running').length, list.length),
+  stopped: list.filter(a => a.status === 'failed').length,
+})
+
+// The band's state in words, so it never rests on the bar's colour alone.
+export const bandWords = (done: number, total: number, stopped: number): string => {
+  const stoppedWords = stopped ? `${stopped} stopped` : ''
+  if (progressOf(done, total).isFinished) return stopped ? `Finished · ${stoppedWords}` : 'All done'
+  return [`${done}/${total}`, stoppedWords].filter(Boolean).join(' · ')
+}
+
+// The terminal band row, fitted to `columns` so it never wraps. As the room shrinks the "/pulse" hint goes
+// first, then the percent (under 46 columns), then the bar; the count words always stay. The close button
+// takes `wideDismiss` from 80 columns when it fits, `narrowDismiss` below.
+// Widths count cells, with the gaps of 2 between parts.
+export type TerminalBandLayout = { barWidth: number; isPercentShown: boolean; isHintShown: boolean; dismissLabel: string }
+export const terminalBandLayout = (
+  columns: number,
+  words: string,
+  crewLabel: string,
+  isHintWanted: boolean,
+  wideDismiss = 'Clear finished',
+  narrowDismiss = 'Clear',
+): TerminalBandLayout => {
+  const GAP = 2
+  const BAR_MIN = 6
+  const title = '● Pulse'.length
+  const percent = '100%'.length
+  const hint = '/pulse'.length
+  const fixed = (dismiss: string) => title + GAP + words.length + GAP + crewLabel.length + GAP + dismiss.length
+  // One spare cell: a row that ends at the last column wraps on some terminals.
+  const room = Math.max(0, columns - 1)
+  const dismissLabel = columns >= 80 && fixed(wideDismiss) + GAP + percent + GAP + hint + GAP + BAR_MIN <= room ? wideDismiss : narrowDismiss
+  let left = room - fixed(dismissLabel)
+  const isPercentShown = columns >= 46 && left >= GAP + percent + GAP + BAR_MIN
+  if (isPercentShown) left -= GAP + percent
+  const isHintShown = isHintWanted && isPercentShown && left >= GAP + hint + GAP + BAR_MIN
+  if (isHintShown) left -= GAP + hint
+  const barWidth = left >= GAP + BAR_MIN ? Math.min(40, left - GAP) : 0
+  return { barWidth, isPercentShown, isHintShown, dismissLabel }
+}
 
 // ---------------------------------------------------------------------------
 // Motion. Every redraw is a new image whose CSS animations start over, so each one is
@@ -268,8 +353,8 @@ const BAR_H = 16
 const CELL = 3
 const CRAB_W = 26
 
-const bandText = (done: number, total: number): string =>
-  progressOf(done, total).isFinished ? 'All done' : `${done}/${total} · ${total - done} working`
+const bandText = (done: number, total: number, stopped: number): string =>
+  progressOf(done, total).isFinished ? bandWords(done, total, stopped) : [`${done}/${total}`, `${total - done} working`, stopped ? `${stopped} stopped` : ''].filter(Boolean).join(' · ')
 const percentText = (done: number, total: number): string => `${Math.round(progressOf(done, total).ratio * 100)}%`
 
 // One tween: the element's attributes hold where it ends, the keyframe only where it starts.
@@ -309,8 +394,8 @@ export const bandSvg = (b: BarState, W: number, at: number): string => {
   }
   const pillColorOf = (isFinished: boolean, pill: ReturnType<typeof pillOf>) =>
     isFinished ? JADE : pulseAt(Math.min(1, (pill.pillX + pill.pillW) / BAR_W))
-  const to = pillOf(bandText(p.done, p.total), fillW)
-  const from = pillOf(bandText(was.done, was.total), fromFillW)
+  const to = pillOf(bandText(p.done, p.total, b.stopped ?? 0), fillW)
+  const from = pillOf(bandText(was.done, was.total, b.fromStopped ?? 0), fromFillW)
   const pillColor = pillColorOf(p.isFinished, to)
   const dot = p.isFinished ? JADE : CORAL
   const percent = percentText(p.done, p.total)
@@ -451,13 +536,16 @@ export const packLanes = (runs: AgentRun[], at: number, maxLanes = MAX_LANES): {
   return { placed, lanes: laneEnds.length }
 }
 
-type Timeline = { body: string; height: number; span: number }
+type Timeline = { body: string; height: number; span: number; hidden: number }
+
+// The words for capsules the full timeline cannot draw: past the lane cap, or older than the last runs it keeps.
+export const hiddenRunsText = (hidden: number): string => (hidden ? `+${hidden} more` : '')
 
 // Lanes of capsules from `top`, `width` wide. The full version has tooltips, shimmer and an axis,
-// and leaves out runs past the lane cap (the header counts them).
+// and leaves out runs past the lane cap, counting them as "+N more" on the axis.
 const timeline = (list: AgentRun[], at: number, top: number, width: number, laneH: number, isFull: boolean): Timeline => {
   const runs = list.slice(-TIMELINE_RUNS)
-  if (!runs.length) return { body: '', height: 0, span: 0 }
+  if (!runs.length) return { body: '', height: 0, span: 0, hidden: 0 }
   const laneGap = isFull ? 3 : 2
   const { placed, lanes } = packLanes(runs, at)
   const origin = Math.min(...runs.map(run => run.startedAt))
@@ -479,15 +567,17 @@ const timeline = (list: AgentRun[], at: number, top: number, width: number, lane
         isRunning && isFull
           ? `<clipPath id="tl${index}"><rect ${box}/></clipPath><g clip-path="url(#tl${index})"><rect class="sh" ${box} fill="url(#sheen)" style="animation-delay:${phase(at, 2.4, lane * 0.35)}"/></g><circle class="t-${role}" cx="${(x + capsuleW - radius).toFixed(1)}" cy="${y + radius}" r="${radius}"/>`
           : ''
-      const label = `${run.description || run.type}, ${run.type}, ${fmtTime(end - run.startedAt)}${run.status === 'failed' ? ', stopped' : ''}`
+      const label = `${run.description || run.type}, ${run.type}, ${fmtTime(end - run.startedAt)}${run.status === 'failed' ? `, ${runStopLabel(run).toLowerCase()}` : ''}`
       return isFull ? `<g class="cap"><title>${xml(label)}</title>${base}${glow}</g>` : base
     })
     .join('')
   const lanesH = lanes * (laneH + laneGap) - laneGap
-  if (!isFull) return { body: capsules, height: lanesH, span }
+  if (!isFull) return { body: capsules, height: lanesH, span, hidden: 0 }
+  const hidden = list.length - runs.length + placed.filter(item => item.isOverflow).length
   const axisY = top + lanesH + 5.5
-  const axis = `<line class="ln" x1="0" y1="${axisY}" x2="${width}" y2="${axisY}"/>${textAt(0, axisY + 13, 'm', 10, '0:00', TABULAR)}${textAt(width, axisY + 13, 'm', 10, fmtTime(span), `${TABULAR} text-anchor="end"`)}`
-  return { body: capsules + axis, height: lanesH + 5.5 + 16, span }
+  const more = hidden ? textAt(width / 2, axisY + 13, 's', 10, hiddenRunsText(hidden), `${TABULAR} text-anchor="middle" font-weight="600"`) : ''
+  const axis = `<line class="ln" x1="0" y1="${axisY}" x2="${width}" y2="${axisY}"/>${textAt(0, axisY + 13, 'm', 10, '0:00', TABULAR)}${more}${textAt(width, axisY + 13, 'm', 10, fmtTime(span), `${TABULAR} text-anchor="end"`)}`
+  return { body: capsules + axis, height: lanesH + 5.5 + 16, span, hidden }
 }
 
 // ---------------------------------------------------------------------------
@@ -506,7 +596,7 @@ export const statusPhrase = (list: AgentRun[]): string => {
 const STAT_LABEL = 11
 const STAT_VALUE = 12.5
 
-export const headerSvg = (W: number, list: AgentRun[], at: number, clockAt: number): Drawing => {
+export const headerSvg = (W: number, list: AgentRun[], at: number, clockAt: number): Drawing & { hidden: number } => {
   const sums = totals(list, at)
   const working = list.filter(a => a.status === 'running').length
   const failed = list.filter(a => a.status === 'failed').length
@@ -519,14 +609,15 @@ export const headerSvg = (W: number, list: AgentRun[], at: number, clockAt: numb
     ? `<tspan class="t-fail" dx="8" font-family="${FONT}" font-size="11.5" font-weight="600">${failed} stopped</tspan>`
     : ''
   const status = `${mark}<text class="tx" x="18" y="20" font-family="${FONT}" font-size="13.5" font-weight="600">${xml(statusPhrase(list))}${stopped}</text>
-<text x="${W}" y="22" text-anchor="end"><tspan class="m" font-family="${FONT}" font-size="11">elapsed</tspan><tspan class="tx" dx="6" font-family="${FONT}" font-size="17" font-weight="600"${TABULAR}>${fmtTime(sums.time)}</tspan></text>`
-  if (!list.length) return { source: svg(W, 30, status, clockAt), height: 30 }
+<text x="${W}" y="22" text-anchor="end"><tspan class="m" font-family="${FONT}" font-size="11">active</tspan><tspan class="tx" dx="6" font-family="${FONT}" font-size="17" font-weight="600"${TABULAR}>${fmtTime(sums.time)}</tspan></text>`
+  if (!list.length) return { source: svg(W, 30, status, clockAt), height: 30, hidden: 0 }
 
   // The stats row: the first layout that fits, from the fullest to the most compact.
   const doneCount = list.length - working
   const agentValues = working ? [`${doneCount} of ${list.length} done`, `${doneCount}/${list.length} done`, `${doneCount}/${list.length}`] : [`${list.length}`]
   const pairsOf = (agents: string, hasTokens: boolean): [string, string][] => [
-    ['cost', '≈' + fmtCost(sums.cost)],
+    // With every run unpriced there is no estimate to show.
+    sums.unpriced === list.length ? ['cost', 'price unknown'] : ['cost', '≈' + fmtCost(sums.cost)],
     ...(hasTokens ? ([['tokens', fmtTokens(sums.tokens)]] as [string, string][]) : []),
     ['agents', agents],
   ]
@@ -551,7 +642,7 @@ export const headerSvg = (W: number, list: AgentRun[], at: number, clockAt: numb
     .join('')
   const lanes = timeline(list, at, 68, W, 6, true)
   const height = 68 + lanes.height
-  return { source: svg(W, height, `${status}${stats}${lanes.body}`, clockAt), height }
+  return { source: svg(W, height, `${status}${stats}${lanes.body}`, clockAt), height, hidden: lanes.hidden }
 }
 
 // ---------------------------------------------------------------------------
@@ -583,13 +674,14 @@ export const agentSvg = (W: number, a: AgentRun, at: number, clockAt: number, is
   const line1 = `${textAt(ROW_X, 20, 'tx', 13, fitText(a.description || a.type, 13, markX - ROW_X - 14), ' font-weight="600"')}
 ${statusMark(markX, 15.5, a)}${textAt(W, 20, isRunning ? 'tx' : 'm', 12, time, `${TABULAR} text-anchor="end" font-weight="600"`)}`
 
-  // Line 2: the type chip, the model when one is known, and a stopped chip for a failed run.
+  // Line 2: the type chip, the model when one is known, and a chip saying why a failed run stopped.
   const typeChip = chip(ROW_X, 27, fitText(a.type, 10.5, (W - ROW_X) * 0.5), `f-${role}`, `t-${role}`)
-  const stopW = isFailed ? chip(0, 27, 'Stopped', 'xmf', 't-fail').width + 8 : 0
+  const stopLabel = isFailed ? fitText(runStopLabel(a), 10.5, Math.max(60, (W - ROW_X) * 0.45)) : ''
+  const stopW = isFailed ? chip(0, 27, stopLabel, 'xmf', 't-fail').width + 8 : 0
   const modelX = ROW_X + typeChip.width + 8
   const model = fitText(runModel(a), 11, W - modelX - stopW)
   const stopX = model ? modelX + textWidth(model, 11) + 8 : modelX
-  const stopChip = isFailed ? chip(stopX, 27, 'Stopped', 'xmf', 't-fail').body : ''
+  const stopChip = isFailed ? chip(stopX, 27, stopLabel, 'xmf', 't-fail').body : ''
   const line2 = `${typeChip.body}${model ? textAt(modelX, 39, 's', 11, model) : ''}${stopChip}`
 
   // Line 3: metrics in fixed columns, so values line up down the panel. A narrow panel keeps ctx and cost.
@@ -597,7 +689,7 @@ ${statusMark(markX, 15.5, a)}${textAt(W, 20, isRunning ? 'tx' : 'm', 12, time, `
   const metrics: [string, string][] = [
     ['ctx', `${ctxOf(a)}%`],
     ...(isNarrow ? [] : ([['tokens', fmtTokens(a.tokens)]] as [string, string][])),
-    ['cost', '≈' + fmtCost(a.costUsd)],
+    a.isPriceUnknown ? ['price', 'unknown'] : ['cost', '≈' + fmtCost(a.costUsd)],
     ...(W >= 400 ? ([['steps', String(a.steps)]] as [string, string][]) : []),
   ]
   const columnW = Math.min(110, (W - ROW_X) / metrics.length)
@@ -657,7 +749,8 @@ ${emptyLines(W)
 
 export const compactSvg = (W: number, list: AgentRun[], at: number, clockAt: number): Drawing => {
   const sums = totals(list, at)
-  const summary = `≈${fmtCost(sums.cost)} · ${fmtTokens(sums.tokens)} · ${fmtTime(sums.time)}`
+  const cost = sums.unpriced === list.length ? 'price unknown' : `≈${fmtCost(sums.cost)}`
+  const summary = `${cost} · ${fmtTokens(sums.tokens)} · ${fmtTime(sums.time)} active`
   const ordered = [...list.filter(a => a.status === 'running'), ...list.filter(a => a.status !== 'running')]
   const fit = Math.max(1, Math.floor((W - textWidth(summary, 12) - 40) / 34))
   const shown = ordered.slice(0, fit)
