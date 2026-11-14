@@ -1,0 +1,30 @@
+{
+  "name": "pulse-ports",
+  "version": "0.1.0",
+  "description": "Holds commands that would start a dev server on a port you keep for your own testing, and offers a free port instead.",
+  "author": { "name": "MrValraven" },
+  "repository": "https://github.com/MrValraven/pulse-mods",
+  "keywords": ["mods", "ports", "dev-server", "safety"],
+  "userConfig": {
+    "reservedPorts": {
+      "type": "string",
+      "title": "Reserved ports",
+      "description": "Ports you keep for your own testing, as a comma list (3000, 8080). A command that would start a server on one of them is held.",
+      "default": "3000"
+    },
+    "checkPackageJson": {
+      "type": "string",
+      "title": "Reserve package.json ports",
+      "description": "on: the ports the nearest package.json scripts would serve on (--port, -p, PORT=, vite.config server.port, framework defaults) are reserved too. off: only the reservedPorts list is.",
+      "default": "on",
+      "options": ["on", "off"]
+    },
+    "firstFreePort": {
+      "type": "number",
+      "title": "First free port",
+      "description": "Where the search for a free port starts. The first port from here up that is not reserved and has no listener is offered.",
+      "default": 4100
+    }
+  },
+  "license": "MIT"
+}
