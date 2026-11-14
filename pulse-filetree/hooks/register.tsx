@@ -6,6 +6,7 @@ import type { Activity, FileNode, FileTree, Theme } from '../types'
 import { BRANCH_ICON, chainOf, type GitAction, gitActions, readOnly, readTargets, resolve } from './git'
 import type { RowSpec, RowsProps, Seg } from './rows'
 import { CHEVRON_CLOSED, CHEVRON_OPEN, fileBadge, fileIcon, folderInk, onInkFor } from './icons'
+import { type LucideName, lucideNameFor, lucideSvg } from './lucide'
 import { buildPalette, dateLabel, gitInk, inkOnPane, mix, type Palette, RECENT_MS, RECENT_SOFT_MS, recentLevel, truncateMiddle, widthOf } from './look'
 import {
   age,
@@ -1361,7 +1362,11 @@ export const register: Register = (on, options) => {
     }
     const isDesktop = e.surface === 'desktop'
     const unicode = glyphSetting === 'plain' || (glyphSetting === 'auto' && (noNerd || isDesktop))
+    // The desktop draws Lucide icons unless the glyphs setting asks for the plain badges. A Client
+    // has no Svg, so its rows leave the icon's cells blank and the icons are laid over them.
+    const isLucide = isDesktop && glyphSetting !== 'plain'
     const { Box, Text, Button, Input, Client } = $.ui.resolve(e)
+    const Svg = e.surface === 'desktop' ? $.ui.resolve(e).Svg : undefined
     const t = await get($)
     const theme: Theme = (await $.state.get(THEME)).value ?? DEFAULT_THEME
     const palette: Palette = buildPalette(theme, isDesktop)
@@ -1376,9 +1381,9 @@ export const register: Register = (on, options) => {
       const text = buttons.find(b => b.id === hovered)?.hint
       if (!text) return null
       const room = e.props.bodyColumns - used - 2
-      return text.length <= room ? <Text color={palette.muted}>{`${text} `}</Text> : null
+      return text.length <= room ? <Text mono color={palette.muted}>{`${text} `}</Text> : null
     }
-    const divider = (columns: number) => <Text color={palette.faint} wrap="truncate-end">{'─'.repeat(Math.max(1, columns))}</Text>
+    const divider = (columns: number) => <Text mono color={palette.faint} wrap="truncate-end">{'─'.repeat(Math.max(1, columns))}</Text>
     if (t.preview) {
       if (previewed?.path !== t.preview) await loadPreview($, t.preview)
       const p = previewed
@@ -1393,16 +1398,16 @@ export const register: Register = (on, options) => {
         <Box flexDirection="column" minHeight={Math.max(1, e.props.scroll?.bodyRows ?? 1)} backgroundColor={theme.bg || undefined}>
           <Box flexDirection="row">
             <Button key="back" plain label={backLabel} onPress={() => void closePreview($)} />
-            <Text> </Text>
+            <Text mono> </Text>
             <Box flexShrink={1} flexGrow={1}>
-              <Text bold color={palette.text} wrap="truncate-start">
+              <Text mono bold color={palette.text} wrap="truncate-start">
                 {name}
               </Text>
             </Box>
             {hint([external], widthOf(backLabel) + 2 + widthOf(name) + widthOf(external.label))}
             {button(external)}
           </Box>
-          {p?.note ? <Text color={palette.muted}>{p.note}</Text> : null}
+          {p?.note ? <Text mono color={palette.muted}>{p.note}</Text> : null}
           {isDesktop && divider(e.props.bodyColumns)}
           <Client
             key="rows"
@@ -1423,8 +1428,10 @@ export const register: Register = (on, options) => {
     const rows = visibleRows(t)
 
     // The controls. Labels say what a press does; all are drawn alike, so state is read from
-    // the label. The desktop puts Go up and Reload beside the search field and the view
-    // toggles on a row of their own; the terminal puts every control on a row that wraps.
+    // the label. The desktop gives the search field a row of its own and puts the controls on
+    // the row below in two groups that wrap as units: Go up and Reload on the left, the view
+    // toggles at the right edge, dropping to their own left-aligned line when the pane is
+    // narrow. The terminal puts every control on a row that wraps.
     // Follow cwd shows only while the tree is not following, and Clear selection sits beside
     // the selection in the footer.
     const say = (text: string) => (isDesktop ? text.charAt(0).toUpperCase() + text.slice(1) : text)
@@ -1550,6 +1557,11 @@ export const register: Register = (on, options) => {
     const activeLevel = activeFolder && activeFolder !== t.root ? (rows.find(row => row.node.id === activeFolder)?.depth ?? -1) : -1
     // An ignored row fades whole: its inks pulled most of the way to the muted colour.
     const FADE = 0.6
+    // Where each row's Lucide icon sits on the desktop: the cells before its blank slot, the icon
+    // and its colour, by row id.
+    type IconOverlay = { prefixCells: number; name: LucideName; color: string }
+    const iconOverlays = new Map<string, IconOverlay>()
+    const LUCIDE_SLOT = '   '
 
     const rowSpec = (r: (typeof rows)[number]): RowSpec => {
       const n = r.node
@@ -1570,8 +1582,9 @@ export const register: Register = (on, options) => {
       const badge = n.kind === 'dir' ? undefined : fileBadge(n)
       const glyphInk = isRepo ? palette.accent : badge ? inkOnPane(palette, badge.ink) : inkOnPane(palette, folderInk(n.name))
       const glyph = unicode ? (badge ? '' : '▇▅ ') : `${fileIcon(n, r.open, isRepo)} `
-      const iconSegs: Seg[] =
-        unicode && badge
+      const iconSegs: Seg[] = isLucide
+        ? [{ t: LUCIDE_SLOT, role: 'icon' }]
+        : unicode && badge
           ? [{ t: badge.text, c: onInkFor(fade(badge.ink)), bg: fade(badge.ink), b: true, role: 'icon' }, { t: ' ' }]
           : isRowLit
             ? [{ t: glyph, sh: tone, dim: isDim, one: true, role: 'icon' }]
@@ -1616,6 +1629,16 @@ export const register: Register = (on, options) => {
         isRowLit ? { t: name, sh: tone, dim: isDim, b: isBright } : { t: name, c: nameColor, b: n.id === t.selected, s: status === 'D' && n.kind !== 'dir' },
         ...(linkMark ? [{ t: linkMark, c: palette.muted }] : []),
       ]
+      if (isLucide) {
+        // A row Claude is on takes the first shade of the palette its name shimmers in.
+        const shimmerPalette = isDim ? palette.shimmer[tone]?.dim : palette.shimmer[tone]?.bright
+        const shimmerInk = shimmerPalette?.[0] ?? palette.ink(tone)
+        iconOverlays.set(n.id, {
+          prefixCells: widthOf(gutter.t) + segsWidth(guideSegs) + widthOf(caret),
+          name: lucideNameFor(n, r.open, isRepo),
+          color: isRowLit ? shimmerInk : fade(glyphInk),
+        })
+      }
       const cellSegs: Seg[] = [...rowCells.detail, ...(mainWidth && !isDateDropped ? padTo(rowCells.main, mainWidth) : []), rowCells.mark]
       const right = isIgnored ? cellSegs.map(segment => (segment.c === undefined ? segment : { ...segment, c: palette.faint })) : cellSegs
       return { id: n.id, left: clean(left), right: clean(right) }
@@ -1642,10 +1665,18 @@ export const register: Register = (on, options) => {
       ...shown.map(rowSpec),
     ]
     if (nativeScroll) {
+      // An overlaid icon's blank cells and alt count toward the drawn text too.
+      const overlayText = (spec: RowSpec) => {
+        const overlay = isLucide && spec.id ? iconOverlays.get(spec.id) : undefined
+        return overlay ? overlay.prefixCells + overlay.name.length : 0
+      }
       let size = 0
-      const cut = specs.findIndex(r => (size += JSON.stringify(r).length + 1) > ROWS_BUDGET)
+      const cut = specs.findIndex(r => (size += JSON.stringify(r).length + 1 + overlayText(r)) > ROWS_BUDGET)
       if (cut >= 0) specs.splice(cut, specs.length - cut, note(`  … ${specs.length - cut} more rows, collapse folders or use search`))
     }
+    // One overlay row per drawn row, so the icons stay in line; notes and the cut line get an empty one.
+    const isIconOverlaid = isLucide && Svg !== undefined
+    const overlayRows = isIconOverlaid ? specs.map(spec => (spec.id ? iconOverlays.get(spec.id) : undefined)) : []
     const barSize = Math.max(1, Math.round((specs.length * shown.length) / Math.max(1, rows.length)))
     const bar = isBarShown ? { pos: max ? Math.round((from / max) * (specs.length - barSize)) : 0, size: barSize, thumb: palette.accent, track: palette.faint } : undefined
 
@@ -1658,13 +1689,13 @@ export const register: Register = (on, options) => {
       return (
         <Box flexDirection="row" flexShrink={0}>
           {rootCounts.map(segment => (
-            <Text color={segment.c}>{segment.t}</Text>
+            <Text mono color={segment.c}>{segment.t}</Text>
           ))}
           {isLinesShown &&
             lineSegs(totals).map(segment => (
-              <Text color={segment.c}>{segment.t}</Text>
+              <Text mono color={segment.c}>{segment.t}</Text>
             ))}
-          {rootCounts.length === 0 && totals[0] === 0 && totals[1] === 0 && <Text color={palette.muted}> clean</Text>}
+          {rootCounts.length === 0 && totals[0] === 0 && totals[1] === 0 && <Text mono color={palette.muted}> clean</Text>}
         </Box>
       )
     }
@@ -1675,22 +1706,22 @@ export const register: Register = (on, options) => {
       const tone = t.flashTones[BRANCH_ROW] ?? 'teal'
       return (
         <Box flexDirection="row" height={1} overflow="hidden">
-          <Text color={isFlash ? palette.ink(tone) : palette.accent}>{(unicode ? BRANCH_ICON.plain : BRANCH_ICON.nerd) + ' '}</Text>
+          <Text mono color={isFlash ? palette.ink(tone) : palette.accent}>{(unicode ? BRANCH_ICON.plain : BRANCH_ICON.nerd) + ' '}</Text>
           {/* A branch name that fits in most of the row stays whole and the upstream gives way. */}
           <Box flexShrink={widthOf(b.head) <= width * 0.6 ? 0 : 1} overflow="hidden">
-            <Text bold color={palette.text} wrap="truncate-end">
+            <Text mono bold color={palette.text} wrap="truncate-end">
               {b.head}
             </Text>
           </Box>
           {b.ahead > 0 || b.behind > 0 ? (
             <Box flexDirection="row" flexShrink={0}>
-              {b.ahead > 0 && <Text color={palette.muted}>{` ↑${b.ahead}`}</Text>}
-              {b.behind > 0 && <Text color={palette.muted}>{` ↓${b.behind}`}</Text>}
+              {b.ahead > 0 && <Text mono color={palette.muted}>{` ↑${b.ahead}`}</Text>}
+              {b.behind > 0 && <Text mono color={palette.muted}>{` ↓${b.behind}`}</Text>}
             </Box>
           ) : null}
           {b.upstream && (
             <Box flexShrink={100} overflow="hidden">
-              <Text color={palette.muted} wrap="truncate-end">
+              <Text mono color={palette.muted} wrap="truncate-end">
                 {` ${b.upstream}`}
               </Text>
             </Box>
@@ -1707,11 +1738,11 @@ export const register: Register = (on, options) => {
       const hash = a.state === 'done' && a.kind === 'git commit' ? (a.detail.split(' ')[0] ?? '') : ''
       return (
         <Box flexDirection="row" marginLeft={2} flexShrink={0}>
-          <Text color={isFailed ? palette.deleted : palette.ink(a.tone)}>{icon + ' '}</Text>
-          <Text bold={a.state === 'running'} color={isFailed ? palette.deleted : palette.text}>
+          <Text mono color={isFailed ? palette.deleted : palette.ink(a.tone)}>{icon + ' '}</Text>
+          <Text mono bold={a.state === 'running'} color={isFailed ? palette.deleted : palette.text}>
             {a.state === 'running' ? `${a.label}…` : a.label}
           </Text>
-          {hash && <Text color={palette.muted}>{` ${hash}`}</Text>}
+          {hash && <Text mono color={palette.muted}>{` ${hash}`}</Text>}
         </Box>
       )
     }
@@ -1719,7 +1750,24 @@ export const register: Register = (on, options) => {
     // The terminal draws plain labels, so a quiet dot keeps two-word labels apart.
     const toolbar = (
       <Box flexDirection="row" flexWrap="wrap" columnGap={1}>
-        {isDesktop ? toolbarButtons.map(button) : toolbarButtons.flatMap((b, index) => (index === 0 ? [button(b)] : [<Text color={palette.faint}>·</Text>, button(b)]))}
+        {toolbarButtons.flatMap((b, index) => (index === 0 ? [button(b)] : [<Text mono color={palette.faint}>·</Text>, button(b)]))}
+      </Box>
+    )
+    // The desktop draws its labels plain too, so each group keeps the same quiet dot between
+    // labels and never breaks inside itself; the spacer pushes the view group to the right
+    // edge while both groups fit on one line.
+    const desktopButtonGroup = (groupKey: string, groupButtons: ButtonProps[]) => (
+      <Box key={groupKey} flexDirection="row" alignItems="center" flexShrink={0} columnGap={1}>
+        {groupButtons.flatMap((groupButton, index) =>
+          index === 0 ? [button(groupButton)] : [<Text key={`dot-${groupButton.id}`} mono color={palette.faint}>·</Text>, button(groupButton)],
+        )}
+      </Box>
+    )
+    const desktopControls = (
+      <Box flexDirection="row" flexWrap="wrap" alignItems="center" columnGap={2}>
+        {desktopButtonGroup('navigation', [upButton, reloadButton])}
+        <Box key="spacer" flexGrow={1} />
+        {desktopButtonGroup('view', viewButtons)}
       </Box>
     )
     const gitIcon = unicode ? '± ' : '\u{e702} '
@@ -1736,16 +1784,45 @@ export const register: Register = (on, options) => {
       />
     )
     const clearSearch = t.query ? <Button key="clear" plain dimColor label={isDesktop ? 'Clear search' : 'clear'} onPress={() => void search($, '')} /> : null
+    const treeClient = (
+      <Client
+        key="rows"
+        module="./rows.tsx"
+        props={{ rows: specs, active: t.cursor, activeBg: palette.cursorBg, hoverBg: palette.hoverBg, accent: palette.accent, tones: palette.shimmer, pointer, ...(bar ? { bar } : {}), ...(isIconOverlaid ? { isStill: true } : {}) } satisfies RowsProps}
+      />
+    )
+    // The Lucide icons lie over the tree, one row of them per tree row, each at the start of its
+    // row's blank icon slot. The overlay is clipped to the tree so a row the Client cuts draws no icon.
+    const tree =
+      isIconOverlaid && Svg ? (
+        <Box position="relative" flexDirection="column" flexShrink={0} overflow="hidden">
+          {treeClient}
+          <Box position="absolute" top={0} left={0} flexDirection="column">
+            {overlayRows.map(overlay =>
+              overlay ? (
+                <Box flexDirection="row" height={1} alignItems="center">
+                  <Text mono>{' '.repeat(overlay.prefixCells)}</Text>
+                  <Svg source={lucideSvg(overlay.name, overlay.color)} alt={overlay.name} width={14} height={14} />
+                </Box>
+              ) : (
+                <Box height={1} />
+              ),
+            )}
+          </Box>
+        </Box>
+      ) : (
+        treeClient
+      )
 
     return (
       <Box flexDirection="column" minHeight={Math.max(1, e.props.scroll?.bodyRows ?? 1)} backgroundColor={theme.bg || undefined}>
         <Box flexDirection="row">
           <Box flexDirection="row" flexShrink={1} overflow="hidden">
-            <Text bold color={palette.isCustomTheme ? theme.accent : palette.text} wrap="truncate-start">
+            <Text mono bold color={palette.isCustomTheme ? theme.accent : palette.text} wrap="truncate-start">
               {repoName}
             </Text>
             {subPath ? (
-              <Text color={palette.muted} wrap="truncate-start">
+              <Text mono color={palette.muted} wrap="truncate-start">
                 {`/${subPath}`}
               </Text>
             ) : null}
@@ -1755,19 +1832,17 @@ export const register: Register = (on, options) => {
         </Box>
         {branchRow()}
         {!t.top && showHints && (
-          <Text color={palette.muted} wrap="truncate-end">
+          <Text mono color={palette.muted} wrap="truncate-end">
             {gitIcon}Git status starts after git init
           </Text>
         )}
         {isDesktop ? null : toolbar}
         {isDesktop ? (
-          <Box flexDirection="row" columnGap={1}>
-            <Box flexGrow={1} minWidth={14}>
+          <Box flexDirection="row" alignItems="center" columnGap={1}>
+            <Box flexDirection="column" flexGrow={1} minWidth={14}>
               {searchInput}
             </Box>
             {clearSearch}
-            {button(upButton)}
-            {button(reloadButton)}
           </Box>
         ) : (
           <Box flexDirection="row">
@@ -1775,12 +1850,8 @@ export const register: Register = (on, options) => {
             {clearSearch}
           </Box>
         )}
-        {isDesktop ? toolbar : null}
-        <Client
-          key="rows"
-          module="./rows.tsx"
-          props={{ rows: specs, active: t.cursor, activeBg: palette.cursorBg, hoverBg: palette.hoverBg, accent: palette.accent, tones: palette.shimmer, pointer, ...(bar ? { bar } : {}) } satisfies RowsProps}
-        />
+        {isDesktop ? desktopControls : null}
+        {tree}
         <Box flexGrow={1} />
         {isDesktop && (t.selected || latest) && divider(width)}
         {(t.selected || latest) && (
@@ -1788,7 +1859,7 @@ export const register: Register = (on, options) => {
           <Box flexDirection="row" {...(isDesktop ? { flexWrap: 'wrap' as const } : {})}>
             {t.selected ? (
               <Box flexShrink={1} {...(isDesktop ? { minWidth: Math.min(24, Math.max(8, width - 18)) } : {})}>
-                <Text color={palette.muted} wrap="truncate-start">
+                <Text mono color={palette.muted} wrap="truncate-start">
                   selected: {t.selected !== t.root && inside(t.root, t.selected) ? t.selected.slice(t.root.endsWith('/') ? t.root.length : t.root.length + 1) : shortPath(t.selected)}
                 </Text>
               </Box>

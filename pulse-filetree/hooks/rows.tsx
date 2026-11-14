@@ -15,6 +15,8 @@ export type RowsProps = {
   bar?: { pos: number; size: number; thumb: string; track: string }
   preview?: { text: string; path: string; startLine: number; markdown: boolean }
   accent?: string
+  // true while icons are laid over the rows: every change snaps, so no row moves away from its icon.
+  isStill?: boolean
 }
 export type Transition = { kind: 'insert' | 'remove' | 'snap'; start: number; count: number }
 type Motion = Transition & { firstFrame: number; ghosts: RowSpec[]; spare: RowSpec[]; limit: number }
@@ -137,7 +139,7 @@ const Rows: ClientModule<RowsProps, Local> = (props, surface) => {
     finishMotion()
     const lastRows = ref.lastRows ?? []
     const plan = planTransition(ref.lastRows?.map(r => r.id), ids, isWindowed)
-    if (plan.kind !== 'snap') {
+    if (plan.kind !== 'snap' && !props.isStill) {
       const ghosts = plan.kind === 'remove' ? lastRows.slice(plan.start, plan.start + plan.count) : []
       const spare = plan.kind === 'insert' && isWindowed ? lastRows.slice(ids.length - plan.count) : []
       // A scrolled window keeps its height while the block moves through it.
@@ -211,7 +213,7 @@ const Rows: ClientModule<RowsProps, Local> = (props, surface) => {
     const tail = s.spin ? (frames[state.phase % frames.length] ?? '') : ''
     if (s.spin && !isDim) {
       return (
-        <Text color={color} bold={s.b}>
+        <Text mono color={color} bold={s.b}>
           {s.t + tail}
         </Text>
       )
@@ -219,23 +221,23 @@ const Rows: ClientModule<RowsProps, Local> = (props, surface) => {
     const palette = s.sh ? (s.dim ? props.tones[s.sh]?.dim : props.tones[s.sh]?.bright) : undefined
     if (!palette || isDim) {
       return (
-        <Text color={color ?? palette?.[0]} backgroundColor={s.bg} bold={s.b} strikethrough={s.s} italic={s.i} dimColor={isDim && !s.bg ? true : undefined}>
+        <Text mono color={color ?? palette?.[0]} backgroundColor={s.bg} bold={s.b} strikethrough={s.s} italic={s.i} dimColor={isDim && !s.bg ? true : undefined}>
           {s.t + tail}
         </Text>
       )
     }
     if (s.one) {
       return (
-        <Text color={shimmer(-1, state.phase, s.t.length, palette)}>
+        <Text mono color={shimmer(-1, state.phase, s.t.length, palette)}>
           {s.t}
         </Text>
       )
     }
     const chars = [...s.t]
     return (
-      <Text bold={s.b}>
+      <Text mono bold={s.b}>
         {chars.map((ch, i) => (
-          <Text color={shimmer(i, state.phase, chars.length, palette)}>{ch}</Text>
+          <Text mono color={shimmer(i, state.phase, chars.length, palette)}>{ch}</Text>
         ))}
       </Text>
     )
@@ -264,7 +266,7 @@ const Rows: ClientModule<RowsProps, Local> = (props, surface) => {
           {r.right.map(s => draw(s, drawnRow.isFaded, false))}
         </Box>
         {props.bar && (
-          <Text color={i >= props.bar.pos && i < props.bar.pos + props.bar.size ? props.bar.thumb : props.bar.track}>
+          <Text mono color={i >= props.bar.pos && i < props.bar.pos + props.bar.size ? props.bar.thumb : props.bar.track}>
             {i >= props.bar.pos && i < props.bar.pos + props.bar.size ? '┃' : '│'}
           </Text>
         )}
@@ -281,7 +283,7 @@ const Rows: ClientModule<RowsProps, Local> = (props, surface) => {
     } catch {}
     if (size + cost > TREE_BUDGET || drawn.length >= MAX_ROWS) {
       visible = i
-      drawn.push(<Text dimColor>{`  … ${drawnRows.length - i} more rows, collapse folders or use search`}</Text>)
+      drawn.push(<Text mono dimColor>{`  … ${drawnRows.length - i} more rows, collapse folders or use search`}</Text>)
       break
     }
     size += cost
