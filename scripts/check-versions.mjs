@@ -24,7 +24,7 @@ function readJson(path) {
 }
 
 function git(...args) {
-  return execFileSync('git', args, { cwd: root, encoding: 'utf8' })
+  return execFileSync('git', args, { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })
 }
 
 const marketplace = readJson('.claude-plugin/marketplace.json')
