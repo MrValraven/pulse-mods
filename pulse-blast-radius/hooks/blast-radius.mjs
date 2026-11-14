@@ -492,9 +492,9 @@ function paneRows(report) {
 function draw(t, state) {
   const { Box, Text, Button } = t;
   const { report } = state;
-  const list = report.lines.map((line, i) => Text({ key: `l${i}`, children: `  ${line}`, wrap: "truncate-end" }));
+  const list = report.lines.map((line, i) => Text({ mono: true, key: `l${i}`, children: `  ${line}`, wrap: "truncate-end" }));
   if (report.more) {
-    list.push(Text({ key: "more", dimColor: true, children: `  + ${report.more} more` }));
+    list.push(Text({ mono: true, key: "more", dimColor: true, children: `  + ${report.more} more` }));
   }
   // The buttons answer the call this pane was drawn for, never whichever one is held now.
   const decide = (choice) => () => {
@@ -508,11 +508,11 @@ function draw(t, state) {
     borderColor: "yellow",
     paddingX: 1,
     children: [
-      Text({ key: "title", bold: true, color: "yellow", children: `⚠ Blast Radius · ${state.risk.label}` }),
-      Text({ key: "cmd", children: [Text({ dimColor: true, children: "Command  " }), Text({ bold: true, children: state.command })], wrap: "truncate-end" }),
-      Text({ key: "sum", children: [Text({ dimColor: true, children: "Would    " }), Text({ color: "red", bold: true, children: report.summary })] }),
+      Text({ mono: true, key: "title", bold: true, color: "yellow", children: `⚠ Blast Radius · ${state.risk.label}` }),
+      Text({ mono: true, key: "cmd", children: [Text({ mono: true, dimColor: true, children: "Command  " }), Text({ mono: true, bold: true, children: state.command })], wrap: "truncate-end" }),
+      Text({ mono: true, key: "sum", children: [Text({ mono: true, dimColor: true, children: "Would    " }), Text({ mono: true, color: "red", bold: true, children: report.summary })] }),
       Box({ key: "list", flexDirection: "column", marginTop: 1, children: list }),
-      report.note ? Text({ key: "note", dimColor: true, italic: true, children: report.note, wrap: "wrap" }) : null,
+      report.note ? Text({ mono: true, key: "note", dimColor: true, italic: true, children: report.note, wrap: "wrap" }) : null,
       Box({
         key: "buttons",
         marginTop: 1,
@@ -520,7 +520,7 @@ function draw(t, state) {
         children: [
           Button({ key: "proceed", label: "Proceed", hotkey: "1", plain: true, onPress: decide("proceed") }),
           Button({ key: "cancel", label: "Cancel", hotkey: "2", plain: true, autoFocus: true, onPress: decide("cancel") }),
-          Text({ key: "hint", dimColor: true, children: "Claude is waiting on your answer" }),
+          Text({ mono: true, key: "hint", dimColor: true, children: "Claude is waiting on your answer" }),
         ],
       }),
     ],
