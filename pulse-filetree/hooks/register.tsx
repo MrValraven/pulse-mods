@@ -1428,8 +1428,10 @@ export const register: Register = (on, options) => {
     const rows = visibleRows(t)
 
     // The controls. Labels say what a press does; all are drawn alike, so state is read from
-    // the label. The desktop puts Go up and Reload beside the search field and the view
-    // toggles on a row of their own; the terminal puts every control on a row that wraps.
+    // the label. The desktop gives the search field a row of its own and puts the controls on
+    // the row below in two groups that wrap as units: Go up and Reload on the left, the view
+    // toggles at the right edge, dropping to their own left-aligned line when the pane is
+    // narrow. The terminal puts every control on a row that wraps.
     // Follow cwd shows only while the tree is not following, and Clear selection sits beside
     // the selection in the footer.
     const say = (text: string) => (isDesktop ? text.charAt(0).toUpperCase() + text.slice(1) : text)
@@ -1748,7 +1750,24 @@ export const register: Register = (on, options) => {
     // The terminal draws plain labels, so a quiet dot keeps two-word labels apart.
     const toolbar = (
       <Box flexDirection="row" flexWrap="wrap" columnGap={1}>
-        {isDesktop ? toolbarButtons.map(button) : toolbarButtons.flatMap((b, index) => (index === 0 ? [button(b)] : [<Text mono color={palette.faint}>·</Text>, button(b)]))}
+        {toolbarButtons.flatMap((b, index) => (index === 0 ? [button(b)] : [<Text mono color={palette.faint}>·</Text>, button(b)]))}
+      </Box>
+    )
+    // The desktop draws its labels plain too, so each group keeps the same quiet dot between
+    // labels and never breaks inside itself; the spacer pushes the view group to the right
+    // edge while both groups fit on one line.
+    const desktopButtonGroup = (groupKey: string, groupButtons: ButtonProps[]) => (
+      <Box key={groupKey} flexDirection="row" alignItems="center" flexShrink={0} columnGap={1}>
+        {groupButtons.flatMap((groupButton, index) =>
+          index === 0 ? [button(groupButton)] : [<Text key={`dot-${groupButton.id}`} mono color={palette.faint}>·</Text>, button(groupButton)],
+        )}
+      </Box>
+    )
+    const desktopControls = (
+      <Box flexDirection="row" flexWrap="wrap" alignItems="center" columnGap={2}>
+        {desktopButtonGroup('navigation', [upButton, reloadButton])}
+        <Box key="spacer" flexGrow={1} />
+        {desktopButtonGroup('view', viewButtons)}
       </Box>
     )
     const gitIcon = unicode ? '± ' : '\u{e702} '
@@ -1819,13 +1838,11 @@ export const register: Register = (on, options) => {
         )}
         {isDesktop ? null : toolbar}
         {isDesktop ? (
-          <Box flexDirection="row" columnGap={1}>
-            <Box flexGrow={1} minWidth={14}>
+          <Box flexDirection="row" alignItems="center" columnGap={1}>
+            <Box flexDirection="column" flexGrow={1} minWidth={14}>
               {searchInput}
             </Box>
             {clearSearch}
-            {button(upButton)}
-            {button(reloadButton)}
           </Box>
         ) : (
           <Box flexDirection="row">
@@ -1833,7 +1850,7 @@ export const register: Register = (on, options) => {
             {clearSearch}
           </Box>
         )}
-        {isDesktop ? toolbar : null}
+        {isDesktop ? desktopControls : null}
         {tree}
         <Box flexGrow={1} />
         {isDesktop && (t.selected || latest) && divider(width)}
