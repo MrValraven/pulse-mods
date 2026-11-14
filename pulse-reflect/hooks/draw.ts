@@ -5,8 +5,7 @@
 // QueerPulse tokens, copied as hex: a mod cannot read CSS variables. The same palette as pulse-progress.
 export const CORAL = '#e8775a'
 export const ROSE = '#b0628f'
-export const FONT = "'DM Sans',-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif"
-export const SERIF = 'Fraunces,Georgia,serif'
+export const FONT = "'JetBrains Mono','Geist Mono','IBM Plex Mono','SF Mono',ui-monospace,Menlo,'Source Code Pro',Consolas,monospace"
 
 const TEXT_LIGHT = '45,27,61'
 const TEXT_DARK = '243,239,233'
@@ -19,7 +18,7 @@ export const ENTER_MS = 420
 const EASE = 'cubic-bezier(.33,1,.68,1)'
 
 const EYEBROW_BASELINE = 13
-const RULE_SIZE = 15
+const RULE_SIZE = 14
 const RULE_LINE = 21
 const RULE_FIRST_BASELINE = 37
 const BOTTOM_ROOM = 10
@@ -43,21 +42,8 @@ export const xml = (text: string): string =>
   text.replace(/[&<>"]/g, character => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[character] ?? character)
 
 const WIDE = /[ᄀ-ᅟ⺀-〾ぁ-㏿㐀-䶿一-鿿가-힣豈-﫿！-｠\u{1F300}-\u{1FAFF}]/u
-const characterEm = (character: string): number =>
-  WIDE.test(character)
-    ? 1
-    : /[0-9]/.test(character)
-      ? 0.6
-      : /[\s.,:;'|!il()[\]]/.test(character)
-        ? 0.3
-        : /[MWmwЖШЩЮЫжшщюы@%]/u.test(character)
-          ? 0.95
-          : /\p{Lu}/u.test(character)
-            ? 0.76
-            : /\p{Script=Cyrillic}/u.test(character)
-              ? 0.64
-              : 0.54
-/** A generous estimate, so a wrapped line never runs past the edge in the fallback font. */
+const characterEm = (character: string): number => (WIDE.test(character) ? 1.2 : 0.6)
+/** Monospace width: 0.6 em a character, and two cells (1.2 em) for CJK, fullwidth and emoji. */
 export const textWidth = (text: string, size: number): number =>
   [...text].reduce((width, character) => width + characterEm(character) * size, 0)
 
@@ -134,7 +120,7 @@ export const cardAlt = (card: Card): string =>
     .join('. ')
 
 // ---------------------------------------------------------------------------
-// The card: an eyebrow (a coral dot, "Learned rule" in Fraunces italic, how often it was said, and the
+// The card: an eyebrow (a coral dot, "Learned rule" in medium-weight mono, how often it was said, and the
 // queue on the right), then the rule itself in quotes, wrapped to the band's width.
 
 export const ruleLines = (rule: string, width: number): string[] =>
@@ -149,7 +135,7 @@ export const cardSvg = (card: Card, width: number, enteredMs?: number): { source
   const lines = ruleLines(card.rule, width)
   const height = RULE_FIRST_BASELINE + (lines.length - 1) * RULE_LINE + BOTTOM_ROOM
   const said = timesSaid(card.count)
-  const titleWidth = 14 + textWidth('Learned rule', 13.5) + (said ? 12 + textWidth(`· ${said}`, 12) : 0)
+  const titleWidth = 14 + textWidth('Learned rule', 12.5) + (said ? 12 + textWidth(`· ${said}`, 12) : 0)
   const fullWaiting = waitingText(card.waiting)
   // A narrow band keeps the count and drops the words around it.
   const waiting = fullWaiting && titleWidth + textWidth(fullWaiting, 12) + 16 > width ? `+${card.waiting}` : fullWaiting
@@ -175,7 +161,7 @@ ${enter}
 <defs><linearGradient id="dot" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="${CORAL}"/><stop offset="1" stop-color="${ROSE}"/></linearGradient></defs>
 <g${isEntering ? ' class="in"' : ''}>
 <circle cx="4" cy="${EYEBROW_BASELINE - 4.5}" r="3.5" fill="url(#dot)"/>
-<text x="14" y="${EYEBROW_BASELINE}"><tspan class="ink" font-family="${SERIF}" font-size="13.5" font-style="italic" font-weight="500">Learned rule</tspan>${
+<text x="14" y="${EYEBROW_BASELINE}"><tspan class="ink" font-family="${FONT}" font-size="12.5" font-weight="500">Learned rule</tspan>${
       said ? `<tspan class="m" font-family="${FONT}" font-size="12" dx="7">·</tspan><tspan class="m" font-family="${FONT}" font-size="12" dx="5">${said}</tspan>` : ''
     }</text>
 ${waiting ? `<text class="m" x="${width}" y="${EYEBROW_BASELINE}" text-anchor="end" font-family="${FONT}" font-size="12" style="font-variant-numeric:tabular-nums">${waiting}</text>` : ''}
