@@ -3,7 +3,8 @@ import type { ClientModule, RenderElement } from 'claude-code'
 // role marks two segments: the folder caret, drawn in the accent while its folder unfolds, and
 // the file or folder icon, reserved for icon styling.
 export type Seg = { t: string; c?: string; b?: boolean; s?: boolean; i?: boolean; sh?: string; dim?: boolean; one?: boolean; spin?: boolean; bg?: string; tab?: string; role?: 'caret' | 'icon' }
-export type RowSpec = { id: string; left: Seg[]; right: Seg[] }
+// isFaded draws the whole row dim and steady: a deleted file's ghost row.
+export type RowSpec = { id: string; left: Seg[]; right: Seg[]; isFaded?: boolean }
 export type RowsProps = {
   rows: RowSpec[]
   active: string
@@ -19,7 +20,8 @@ export type RowsProps = {
   isStill?: boolean
 }
 export type Transition = { kind: 'insert' | 'remove' | 'snap'; start: number; count: number }
-type Motion = Transition & { firstFrame: number; ghosts: RowSpec[]; spare: RowSpec[]; limit: number }
+// hasAnchor lights the caret of the folder above the block; a ghost row leaving has no such folder.
+type Motion = Transition & { firstFrame: number; ghosts: RowSpec[]; spare: RowSpec[]; limit: number; hasAnchor: boolean }
 type Ref = { stop?: () => void; unpoint?: () => void; stopFrames?: () => void; lastRows?: RowSpec[]; lastKey?: string; wasWindowed?: boolean; motion?: Motion }
 type Local = { phase: number; frame: number; drag: boolean; ref: Ref }
 // A ghost row is drawn yet no longer in the tree; a faded one draws dim while it arrives or leaves.
@@ -73,10 +75,87 @@ export function planTransition(previousIds: readonly string[] | undefined, nextI
   return snap
 }
 
+// Faded rows (deleted files' ghosts) whose time is up leave as one block with the rest unchanged:
+// they fade out the way a folding block does. Anything else snaps.
+export function planFadedRemoval(previousRows: readonly Pick<RowSpec, 'id' | 'isFaded'>[] | undefined, nextIds: readonly string[]): Transition {
+  const snap: Transition = { kind: 'snap', start: 0, count: 0 }
+  if (!previousRows || previousRows.length <= nextIds.length) return snap
+  const count = previousRows.length - nextIds.length
+  if (count > MAX_ANIMATED_ROWS) return snap
+  let shared = 0
+  while (shared < nextIds.length && previousRows[shared]?.id === nextIds[shared]) shared++
+  for (let offset = 0; shared + offset < nextIds.length; offset++) {
+    if (previousRows[shared + count + offset]?.id !== nextIds[shared + offset]) return snap
+  }
+  for (let index = shared; index < shared + count; index++) if (!previousRows[index]?.isFaded) return snap
+  return { kind: 'remove', start: shared, count }
+}
+
+// What a row costs, worked out from its parts so no row is serialized to measure it. specCost is
+// the row's own JSON length, which the hooks module sends in the Client's props; drawnCost models
+// the elements this module draws for the row, from the same shapes rowEl and draw build, and
+// stays a little above their serialized length so the budget keeps under the surface's bounds.
+function jsonLength(text: string): number {
+  let length = text.length + 2
+  if (/["\\\u0000-\u001f]/.test(text)) {
+    for (const character of text) {
+      if (character === '"' || character === '\\' || character === '\n' || character === '\t' || character === '\r' || character === '\b' || character === '\f') length += 1
+      else if (character < ' ') length += 5
+    }
+  }
+  return length
+}
+
+function valueLength(value: unknown): number {
+  return typeof value === 'string' ? jsonLength(value) : String(value).length
+}
+
+export function specCost(spec: RowSpec): number {
+  // {"id":…,"left":[…],"right":[…]} and ,"isFaded":true
+  let size = 28 + jsonLength(spec.id) + (spec.isFaded ? 15 : 0)
+  const segs = [...spec.left, ...spec.right]
+  size += Math.max(0, spec.left.length - 1) + Math.max(0, spec.right.length - 1)
+  for (const seg of segs) {
+    const entries = Object.entries(seg).filter(([, value]) => value !== undefined)
+    size += 2 + Math.max(0, entries.length - 1)
+    for (const [key, value] of entries) size += key.length + 3 + valueLength(value)
+  }
+  return size
+}
+
+// The serialized sizes of the fixed parts: the row Box with its key, the hover colour and the
+// three inner Boxes; a Text and its one string child; the scrollbar cell.
+const ROW_FRAME_COST = 330
+const TEXT_COST = 52
+const CHARACTER_TEXT_COST = 75
+const BAR_COST = 75
+
+// `isMotionFaded` is a row a motion draws dim while it arrives or leaves; it draws like a faded
+// spec, each Text with dimColor.
+export function drawnCost(spec: RowSpec, hasBar: boolean, isMotionFaded = false): number {
+  const isFaded = isMotionFaded || Boolean(spec.isFaded)
+  let size = ROW_FRAME_COST + jsonLength(spec.id) + (hasBar ? BAR_COST : 0)
+  for (const seg of [...spec.left, ...spec.right]) {
+    if (seg.sh && !seg.one && !isFaded) {
+      // A shimmering name draws one coloured Text a character inside one bold Text.
+      size += TEXT_COST + 14 + [...seg.t].length * CHARACTER_TEXT_COST
+      continue
+    }
+    size += TEXT_COST + jsonLength(seg.t)
+    if (seg.c || seg.sh) size += 10 + (seg.c ? jsonLength(seg.c) : 9)
+    if (seg.bg) size += 20 + jsonLength(seg.bg)
+    if (seg.b) size += 12
+    if (seg.s) size += 20
+    if (seg.i) size += 14
+    if (isFaded && !seg.bg) size += 16
+  }
+  return Math.ceil(size * 1.1)
+}
+
 // The rows drawn on one frame of a motion, and whether the motion has run its course.
 function frameRows(rows: RowSpec[], motion: Motion, elapsed: number): { drawnRows: DrawnRow[]; isDone: boolean } {
   const plain = (row: RowSpec): DrawnRow => ({ row, isGhost: false, isFaded: false, isAnchor: false })
-  const head = rows.slice(0, motion.start).map((row, index) => ({ ...plain(row), isAnchor: index === motion.start - 1 }))
+  const head = rows.slice(0, motion.start).map((row, index) => ({ ...plain(row), isAnchor: motion.hasAnchor && index === motion.start - 1 }))
   if (motion.kind === 'insert') {
     const perFrame = Math.max(1, Math.ceil(motion.count / INSERT_FRAMES))
     const revealed = Math.min(motion.count, (elapsed + 1) * perFrame)
@@ -138,12 +217,13 @@ const Rows: ClientModule<RowsProps, Local> = (props, surface) => {
   } else if (idsKey !== ref.lastKey) {
     finishMotion()
     const lastRows = ref.lastRows ?? []
-    const plan = planTransition(ref.lastRows?.map(r => r.id), ids, isWindowed)
+    const unfold = planTransition(ref.lastRows?.map(r => r.id), ids, isWindowed)
+    const plan = unfold.kind === 'snap' ? planFadedRemoval(ref.lastRows, ids) : unfold
     if (plan.kind !== 'snap' && !props.isStill) {
       const ghosts = plan.kind === 'remove' ? lastRows.slice(plan.start, plan.start + plan.count) : []
       const spare = plan.kind === 'insert' && isWindowed ? lastRows.slice(ids.length - plan.count) : []
       // A scrolled window keeps its height while the block moves through it.
-      ref.motion = { ...plan, firstFrame: frame, ghosts, spare, limit: isWindowed ? ids.length : Number.MAX_SAFE_INTEGER }
+      ref.motion = { ...plan, firstFrame: frame, ghosts, spare, limit: isWindowed ? ids.length : Number.MAX_SAFE_INTEGER, hasAnchor: unfold.kind !== 'snap' }
       ref.stopFrames = surface.every(FRAME_MS, () => {
         const cur = surface.state
         if (cur) surface.setState({ ...cur, frame: (cur.frame || 0) + 1 })
@@ -259,11 +339,11 @@ const Rows: ClientModule<RowsProps, Local> = (props, surface) => {
         backgroundColor={isActive ? props.activeBg : undefined}
       >
         <Box flexShrink={1} overflow="hidden">
-          {r.left.map(s => draw(s, drawnRow.isFaded, drawnRow.isAnchor))}
+          {r.left.map(s => draw(s, drawnRow.isFaded || Boolean(r.isFaded), drawnRow.isAnchor))}
         </Box>
         <Box flexGrow={1} />
         <Box flexDirection="row" flexShrink={0}>
-          {r.right.map(s => draw(s, drawnRow.isFaded, false))}
+          {r.right.map(s => draw(s, drawnRow.isFaded || Boolean(r.isFaded), false))}
         </Box>
         {props.bar && (
           <Text mono color={i >= props.bar.pos && i < props.bar.pos + props.bar.size ? props.bar.thumb : props.bar.track}>
@@ -276,18 +356,15 @@ const Rows: ClientModule<RowsProps, Local> = (props, surface) => {
   const drawn: RenderElement[] = []
   let size = 0
   for (let i = 0; i < drawnRows.length; i++) {
-    const el = rowEl(drawnRows[i] as DrawnRow, i)
-    let cost = 1_000
-    try {
-      cost = JSON.stringify(el).length
-    } catch {}
+    const drawnRow = drawnRows[i] as DrawnRow
+    const cost = drawnCost(drawnRow.row, Boolean(props.bar), drawnRow.isFaded)
     if (size + cost > TREE_BUDGET || drawn.length >= MAX_ROWS) {
       visible = i
       drawn.push(<Text mono dimColor>{`  … ${drawnRows.length - i} more rows, collapse folders or use search`}</Text>)
       break
     }
     size += cost
-    drawn.push(el)
+    drawn.push(rowEl(drawnRow, i))
   }
   return <Box flexDirection="column">{drawn}</Box>
 }

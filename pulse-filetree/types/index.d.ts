@@ -26,6 +26,8 @@ export type Activity = {
   tone: string
   nerd: string
   plain: string
+  // True when a subagent ran the command, so the footer chip says so.
+  isSubagent?: boolean
 }
 
 export type FileTree = {
@@ -45,7 +47,12 @@ export type FileTree = {
   top: string
   prefix: string
   branch: Branch | null
-  counts: Record<string, [number, number, number]>
+  // Per folder: untracked, modified, deleted and staged-added files.
+  counts: Record<string, [number, number, number, number]>
+  // Why the last git read failed, shown under the header until a read succeeds; empty when it worked.
+  gitError: string
+  // Why the search list could not be built, shown in place of "No files match"; empty when it worked.
+  searchError: string
   flash: string[]
   flashDim: string[]
   flashOn: boolean

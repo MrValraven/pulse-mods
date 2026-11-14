@@ -1,12 +1,12 @@
 {
   "name": "pulse-filetree",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "description": "An IDE-style file tree for Claude Code that shows what Claude is doing and where in files",
   "types": "./types/index.d.ts",
   "author": {
-    "name": "Kurt Buhler"
+    "name": "MrValraven"
   },
-  "repository": "https://github.com/data-goblin/claude-code-filetree",
+  "repository": "https://github.com/MrValraven/pulse-mods",
   "keywords": [
     "file-tree",
     "git",
@@ -17,7 +17,7 @@
     "activity": {
       "type": "string",
       "title": "Claude activity",
-      "description": "Which of Claude's file activity shimmers in the tree: files read with the Read tool or Bash readers (rg, grep, find, cat) in purple, writes in orange and git actions in green",
+      "description": "Which of Claude's file activity shimmers in the tree: files read with the Read tool or Bash readers (rg, grep, find, cat) in purple, writes in orange, git actions in green and a subagent's reads and writes in lilac. The same setting decides which touches outside the folder are listed under the tree and whether deleted files stay as faded rows.",
       "default": "reads and writes",
       "options": [
         "reads and writes",
@@ -50,7 +50,7 @@
     "start": {
       "type": "string",
       "title": "Open at start",
-      "description": "on: the pane opens when a session starts. off: it stays closed until you run /filetree.",
+      "description": "on: the pane opens when a session starts. In the terminal it needs the fullscreen layout and at least 110 columns, as /filetree does; with less it stays closed and a toast says why. off: it stays closed until you run /filetree.",
       "default": "on",
       "options": [
         "on",
@@ -60,7 +60,7 @@
     "column": {
       "type": "string",
       "title": "Right column",
-      "description": "What the right column shows by default: date (last modified), age (time since last modified, short: now, 12m, 3h, 5d, then Oct 9 past a week and the year past a year) or size (files in bytes, folders as disk usage computed in the background). The header button toggles between size and the date or age.",
+      "description": "What the right column shows by default: date (last modified), age (time since last modified, short: now, 12m, 3h, 5d, then Oct 9 past a week and the year past a year) or size (files in bytes, folders as disk usage computed in the background). The header button toggles between size and the date or age, and s in the tree cycles date, age and size.",
       "default": "date",
       "options": [
         "date",

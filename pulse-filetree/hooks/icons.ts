@@ -257,15 +257,6 @@ export function folderInk(name: string): string {
   return FOLDER_BY_NAME.get(name.toLowerCase()) ?? '#c9a25a'
 }
 
-export const GIT_COLOR: Record<string, string> = {
-  A: '#98c379',
-  '?': '#98c379',
-  R: '#61afef',
-  C: '#61afef',
-  M: '#e5c07b',
-  T: '#e5c07b',
-}
-
 const PRIORITY = ['U', 'D', 'M', 'T', 'R', 'C', 'A', '?']
 
 export function stronger(a: string | undefined, b: string): string {
