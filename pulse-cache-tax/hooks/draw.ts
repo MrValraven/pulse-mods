@@ -6,8 +6,7 @@
 export const CORAL = '#e8775a'
 export const JADE = '#4a8c6f'
 export const LILAC = '#8a72cf'
-const FONT = "'DM Sans',-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif"
-const SERIF = 'Fraunces,Georgia,serif'
+const FONT = "'JetBrains Mono','Geist Mono','IBM Plex Mono','SF Mono',ui-monospace,Menlo,'Source Code Pro',Consolas,monospace"
 const TABULAR = ' style="font-variant-numeric:tabular-nums"'
 
 // ---------------------------------------------------------------------------
@@ -38,8 +37,9 @@ export const minutesLeft = (ms: number): number => Math.max(0, Math.ceil(ms / 60
 const ENTITIES: Record<string, string> = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }
 export const xml = (text: string): string => text.replace(/[&<>"]/g, ch => ENTITIES[ch] ?? ch)
 
-const charEm = (ch: string): number =>
-  /[0-9$]/.test(ch) ? 0.6 : /[\s.,:;'|!il()[\]]/.test(ch) ? 0.3 : /[A-Zmw@%≈]/.test(ch) ? 0.75 : 0.56
+// Monospace: every character is 0.6 em, and CJK, fullwidth and emoji take two cells.
+const WIDE = /[ᄀ-ᅟ⺀-〾ぁ-㏿㐀-䶿一-鿿가-힣豈-﫿！-｠\u{1F300}-\u{1FAFF}]/u
+const charEm = (ch: string): number => (WIDE.test(ch) ? 1.2 : 0.6)
 export const textWidth = (text: string, size: number): number => [...text].reduce((width, ch) => width + charEm(ch) * size, 0)
 
 export const fitText = (text: string, size: number, maxWidth: number): string => {
@@ -200,9 +200,9 @@ export const HOLD_TITLE_H = 22
 
 /** The card's head: the title, and how long the cache has been cold. */
 export const holdTitleSvg = (hold: Hold, width: number): string => {
-  const titleW = textWidth(CARD_TITLE, 15) + 10
+  const titleW = textWidth(CARD_TITLE, 13.5) + 10
   const subtitle = fitText(`cold for ${hold.coldFor}`, 12, width - titleW)
-  return svg(width, HOLD_TITLE_H, `<text x="0" y="16"><tspan class="tx" font-family="${SERIF}" font-size="15" font-style="italic" font-weight="600">${CARD_TITLE}</tspan><tspan class="m" dx="10" font-family="${FONT}" font-size="12">${xml(subtitle)}</tspan></text>`)
+  return svg(width, HOLD_TITLE_H, `<text x="0" y="16"><tspan class="tx" font-family="${FONT}" font-size="13.5" font-weight="600">${CARD_TITLE}</tspan><tspan class="m" dx="10" font-family="${FONT}" font-size="12">${xml(subtitle)}</tspan></text>`)
 }
 
 export const holdTitleAlt = (hold: Hold): string => `Message held, the cache has been cold for ${hold.coldFor}`
