@@ -121,6 +121,22 @@ async function texts(ui: any): Promise<string> {
   return JSON.stringify(await ui.drawn()) + rows
 }
 
+// The first element, outermost first, that matches.
+function findElement(element: any, isMatch: (candidate: any) => boolean): any {
+  if (!element || typeof element !== 'object') return undefined
+  if (isMatch(element)) return element
+  for (const child of element.children ?? []) {
+    const found = findElement(child, isMatch)
+    if (found) return found
+  }
+  return undefined
+}
+
+// The tree's Client, the one handed rows (the header buttons are Clients too), wherever the
+// desktop's icon overlay puts it.
+const treeClientOf = (drawn: any) => findElement(drawn, (element: any) => element.type === 'Client' && Array.isArray(element.props?.props?.rows))
+const iconOverlayOf = (drawn: any) => findElement(drawn, (element: any) => element.type === 'Box' && element.props?.position === 'absolute')
+
 const STAMP = /[A-Z][a-z]{2} [ \d]\d (\d{4}|\d{2}:\d{2})/
 const NERD = /[\u{e000}-\u{f8ff}\u{f0000}-\u{fffff}]/u
 
@@ -337,7 +353,7 @@ test('long trees scroll: wheel, scrollbar drag, and a click does not jump the vi
   const props = { ...paneProps(60), scroll: { offset: 0, bodyRows: 20 } }
   const ui = await $.ui.mount({ plugin: 'pulse-filetree', surface: 'terminal', component: 'Pane', requestId: 'filetree', props })
   await clock.settle()
-  const rowsOf = async () => ((await ui.drawn()) as any).children.find((c: any) => c.type === 'Client').props.props
+  const rowsOf = async () => treeClientOf(await ui.drawn()).props.props
   let p = await rowsOf()
   expect(p.bar).toBeDefined()
   expect(p.rows[0].id).toBe(`${root}/f00.txt`)
@@ -370,7 +386,7 @@ test('desktop: a long tree draws every row and leaves the wheel to the app', { t
   const props = { ...paneProps(60), scroll: { offset: 0, bodyRows: 20 } }
   const ui = await $.ui.mount({ plugin: 'pulse-filetree', surface: 'desktop', component: 'Pane', requestId: 'filetree', props })
   await clock.settle()
-  const rowsOf = async () => ((await ui.drawn()) as any).children.find((c: any) => c.type === 'Client').props.props
+  const rowsOf = async () => treeClientOf(await ui.drawn()).props.props
   let p = await rowsOf()
   expect(p.bar).toBeUndefined()
   expect(p.rows.length).toBe(60)
@@ -393,7 +409,7 @@ test('desktop: a very large open tree is cut with a note so the drawn tree stays
   await clock.settle()
   const ui = await $.ui.mount({ plugin: 'pulse-filetree', surface: 'desktop', component: 'Pane', requestId: 'filetree', props: { ...paneProps(60), scroll: { offset: 0, bodyRows: 20 } } })
   await clock.settle()
-  const client = ((await ui.drawn()) as any).children.find((c: any) => c.type === 'Client')
+  const client = treeClientOf(await ui.drawn())
   const rows = client.props.props.rows as any[]
   expect(JSON.stringify(client.props.props).length).toBeLessThan(100_000)
   expect(rows.length).toBeLessThan(5000)
@@ -413,7 +429,7 @@ async function scrolledTree($: any, on: any) {
   await clock.settle()
   await $.ui.scroll({ component: 'Pane', requestId: 'filetree', by: 1 } as any)
   await clock.settle()
-  const ids = async () => (((await ui.drawn()) as any).children.find((c: any) => c.type === 'Client').props.props.rows as { id: string }[]).map(r => r.id)
+  const ids = async () => (treeClientOf(await ui.drawn()).props.props.rows as { id: string }[]).map(r => r.id)
   expect((await ids())[0]).toBe(`${root}/f02.txt`)
   return { root, clock, ui, ids }
 }
@@ -478,7 +494,7 @@ test('watches only git metadata, copies paths, clears search, Home and End', { t
   expect(await ui.find({ key: 'clear' })).toBeUndefined()
   await ui.post({ key: 'end' }, { in: 'rows' })
   await clock.settle()
-  const rowsOf = async () => ((await ui.drawn()) as any).children.find((c: any) => c.type === 'Client').props.props
+  const rowsOf = async () => treeClientOf(await ui.drawn()).props.props
   expect((await rowsOf()).active).toBe(`${root}/c.txt`)
   await ui.post({ key: 'home' }, { in: 'rows' })
   await clock.settle()
@@ -1046,11 +1062,78 @@ async function badgeTree($: any, on: any) {
   await clock.settle()
   const ui = await $.ui.mount({ plugin: 'pulse-filetree', surface: 'desktop', component: 'Pane', requestId: 'filetree', props: paneProps(60) })
   await clock.settle()
-  const rowOf = async (id: string) => (((await ui.drawn()) as any).children.find((c: any) => c.type === 'Client').props.props.rows as any[]).find(r => r.id === id)
-  return { root, clock, ui, rowOf }
+  const rowOf = async (id: string) => (treeClientOf(await ui.drawn()).props.props.rows as any[]).find(r => r.id === id)
+  // The Lucide icon laid over a row on the desktop: the blank cells before it and the Svg's props.
+  const iconOf = async (id: string) => {
+    const drawn = await ui.drawn()
+    const rows = treeClientOf(drawn).props.props.rows as any[]
+    const overlayRow = iconOverlayOf(drawn).children[rows.findIndex(row => row.id === id)]
+    const prefix = overlayRow.children.find((child: any) => child.type === 'Text').children.join('')
+    return { prefix, svg: overlayRow.children.find((child: any) => child.type === 'Svg').props }
+  }
+  return { root, clock, ui, rowOf, iconOf }
 }
 
-test('desktop: a .ts file draws a TS chip in its colour and a folder a coloured block', { timeoutMs: 20_000 }, async ($, on) => {
+test('desktop: a .ts file leaves a blank icon slot with a Lucide code icon over it in its colour, and a folder a folder icon', { timeoutMs: 20_000 }, async ($, on) => {
+  const { root, ui, rowOf, iconOf } = await badgeTree($, on)
+  const file = await rowOf(`${root}/a.ts`)
+  const slot = file.left.find((segment: any) => segment.role === 'icon')
+  expect(slot).toEqual({ t: '   ', role: 'icon' })
+  expect(file.left[file.left.indexOf(slot) + 1].t).toBe('a.ts')
+  expect(JSON.stringify(await ui.drawn({ in: 'rows' }))).not.toContain('"backgroundColor":"#3178c6"')
+  // The gutter and the two cells a file keeps for a folder's caret come before the slot.
+  const fileIcon = await iconOf(`${root}/a.ts`)
+  expect(fileIcon.prefix).toBe('   ')
+  expect(fileIcon.svg.alt).toBe('file-code')
+  expect(fileIcon.svg.width).toBe(14)
+  expect(fileIcon.svg.source).toContain('stroke="#3178c6"')
+  const folder = await rowOf(`${root}/src`)
+  expect(folder.left.find((segment: any) => segment.role === 'icon')).toEqual({ t: '   ', role: 'icon' })
+  expect(folder.left.find((segment: any) => segment.role === 'caret')?.t).toBe('▸ ')
+  // The src green #58b86a sits above the 0.28 luminance cap, so it is pulled 15% toward black.
+  const folderIcon = await iconOf(`${root}/src`)
+  expect(folderIcon.svg.alt).toBe('folder')
+  expect(folderIcon.svg.source).toContain('stroke="#4b9c5a"')
+  await ui.unmount()
+})
+
+test('desktop: an ignored file fades its Lucide icon, name and right column', { timeoutMs: 20_000 }, async ($, on) => {
+  const { root, ui, rowOf, iconOf } = await badgeTree($, on)
+  const row = await rowOf(`${root}/skip.ts`)
+  expect((await iconOf(`${root}/skip.ts`)).svg.source).toContain(`stroke="${mix('#3178c6', '#7a7183', 0.6)}"`)
+  expect(row.left.find((segment: any) => segment.t === 'skip.ts').c).toBe('inactive')
+  expect(row.right.filter((segment: any) => segment.c !== undefined).every((segment: any) => segment.c === 'subtle')).toBe(true)
+  expect((await iconOf(`${root}/a.ts`)).svg.source).toContain('stroke="#3178c6"')
+  await ui.unmount()
+})
+
+test('desktop: the tree carries one icon overlay row per tree row, held still, and the terminal tree carries none', { timeoutMs: 20_000 }, async ($, on) => {
+  const { root, clock, ui, iconOf } = await badgeTree($, on)
+  await ui.post({ press: `${root}/src` }, { in: 'rows' })
+  await clock.settle()
+  const drawn = await ui.drawn()
+  const treeProps = treeClientOf(drawn).props.props
+  expect(treeProps.isStill).toBe(true)
+  expect(iconOverlayOf(drawn).children.length).toBe(treeProps.rows.length)
+  expect((await ui.findAll({ type: 'Svg' })).length).toBe(treeProps.rows.filter((row: any) => row.id).length)
+  // An open folder shows the open icon, and a row one level down sits two cells further in.
+  expect((await iconOf(`${root}/src`)).svg.alt).toBe('folder-open')
+  expect((await iconOf(`${root}/src/b.ts`)).prefix).toBe('     ')
+  // A file Claude reads takes the purple tone's first bright shade.
+  await $.tool.call({ tool: 'Read', file_path: `${root}/a.ts` } as any)
+  await clock.settle()
+  expect((await iconOf(`${root}/a.ts`)).svg.source).toContain('stroke="#8a6fd0"')
+  await ui.unmount()
+  const terminal = await $.ui.mount({ plugin: 'pulse-filetree', surface: 'terminal', component: 'Pane', requestId: 'filetree', props: paneProps(60) })
+  await clock.settle()
+  const terminalDrawn = await terminal.drawn()
+  expect(await terminal.findAll({ type: 'Svg' })).toHaveLength(0)
+  expect(iconOverlayOf(terminalDrawn)).toBeUndefined()
+  expect(treeClientOf(terminalDrawn).props.props.isStill).toBeUndefined()
+  await terminal.unmount()
+})
+
+test('glyphs plain on desktop: a .ts file draws a TS chip in its colour and a folder a coloured block', { timeoutMs: 20_000, options: { glyphs: 'plain' } }, async ($, on) => {
   const { root, ui, rowOf } = await badgeTree($, on)
   const file = await rowOf(`${root}/a.ts`)
   const chip = file.left.find((segment: any) => segment.role === 'icon')
@@ -1064,7 +1147,7 @@ test('desktop: a .ts file draws a TS chip in its colour and a folder a coloured 
   await ui.unmount()
 })
 
-test('an ignored file fades whole: chip, name and right column', { timeoutMs: 20_000 }, async ($, on) => {
+test('glyphs plain on desktop: an ignored file fades whole: chip, name and right column', { timeoutMs: 20_000, options: { glyphs: 'plain' } }, async ($, on) => {
   const { root, ui, rowOf } = await badgeTree($, on)
   const row = await rowOf(`${root}/skip.ts`)
   const chip = row.left.find((segment: any) => segment.role === 'icon')
@@ -1250,7 +1333,7 @@ for (const hints of ['on', 'off'] as const) {
     await clock.settle()
     const drawn = (await ui.drawn()) as any
     expect(JSON.stringify(drawn).includes('git init')).toBe(hints === 'on')
-    expect(drawn.children.find((c: any) => c.type === 'Client').props.props.rows.length).toBe(hints === 'on' ? 16 : 17)
+    expect(treeClientOf(drawn).props.props.rows.length).toBe(hints === 'on' ? 16 : 17)
     await ui.unmount()
   })
 }
