@@ -1376,9 +1376,9 @@ export const register: Register = (on, options) => {
       const text = buttons.find(b => b.id === hovered)?.hint
       if (!text) return null
       const room = e.props.bodyColumns - used - 2
-      return text.length <= room ? <Text color={palette.muted}>{`${text} `}</Text> : null
+      return text.length <= room ? <Text mono color={palette.muted}>{`${text} `}</Text> : null
     }
-    const divider = (columns: number) => <Text color={palette.faint} wrap="truncate-end">{'─'.repeat(Math.max(1, columns))}</Text>
+    const divider = (columns: number) => <Text mono color={palette.faint} wrap="truncate-end">{'─'.repeat(Math.max(1, columns))}</Text>
     if (t.preview) {
       if (previewed?.path !== t.preview) await loadPreview($, t.preview)
       const p = previewed
@@ -1393,16 +1393,16 @@ export const register: Register = (on, options) => {
         <Box flexDirection="column" minHeight={Math.max(1, e.props.scroll?.bodyRows ?? 1)} backgroundColor={theme.bg || undefined}>
           <Box flexDirection="row">
             <Button key="back" plain label={backLabel} onPress={() => void closePreview($)} />
-            <Text> </Text>
+            <Text mono> </Text>
             <Box flexShrink={1} flexGrow={1}>
-              <Text bold color={palette.text} wrap="truncate-start">
+              <Text mono bold color={palette.text} wrap="truncate-start">
                 {name}
               </Text>
             </Box>
             {hint([external], widthOf(backLabel) + 2 + widthOf(name) + widthOf(external.label))}
             {button(external)}
           </Box>
-          {p?.note ? <Text color={palette.muted}>{p.note}</Text> : null}
+          {p?.note ? <Text mono color={palette.muted}>{p.note}</Text> : null}
           {isDesktop && divider(e.props.bodyColumns)}
           <Client
             key="rows"
@@ -1658,13 +1658,13 @@ export const register: Register = (on, options) => {
       return (
         <Box flexDirection="row" flexShrink={0}>
           {rootCounts.map(segment => (
-            <Text color={segment.c}>{segment.t}</Text>
+            <Text mono color={segment.c}>{segment.t}</Text>
           ))}
           {isLinesShown &&
             lineSegs(totals).map(segment => (
-              <Text color={segment.c}>{segment.t}</Text>
+              <Text mono color={segment.c}>{segment.t}</Text>
             ))}
-          {rootCounts.length === 0 && totals[0] === 0 && totals[1] === 0 && <Text color={palette.muted}> clean</Text>}
+          {rootCounts.length === 0 && totals[0] === 0 && totals[1] === 0 && <Text mono color={palette.muted}> clean</Text>}
         </Box>
       )
     }
@@ -1675,22 +1675,22 @@ export const register: Register = (on, options) => {
       const tone = t.flashTones[BRANCH_ROW] ?? 'teal'
       return (
         <Box flexDirection="row" height={1} overflow="hidden">
-          <Text color={isFlash ? palette.ink(tone) : palette.accent}>{(unicode ? BRANCH_ICON.plain : BRANCH_ICON.nerd) + ' '}</Text>
+          <Text mono color={isFlash ? palette.ink(tone) : palette.accent}>{(unicode ? BRANCH_ICON.plain : BRANCH_ICON.nerd) + ' '}</Text>
           {/* A branch name that fits in most of the row stays whole and the upstream gives way. */}
           <Box flexShrink={widthOf(b.head) <= width * 0.6 ? 0 : 1} overflow="hidden">
-            <Text bold color={palette.text} wrap="truncate-end">
+            <Text mono bold color={palette.text} wrap="truncate-end">
               {b.head}
             </Text>
           </Box>
           {b.ahead > 0 || b.behind > 0 ? (
             <Box flexDirection="row" flexShrink={0}>
-              {b.ahead > 0 && <Text color={palette.muted}>{` ↑${b.ahead}`}</Text>}
-              {b.behind > 0 && <Text color={palette.muted}>{` ↓${b.behind}`}</Text>}
+              {b.ahead > 0 && <Text mono color={palette.muted}>{` ↑${b.ahead}`}</Text>}
+              {b.behind > 0 && <Text mono color={palette.muted}>{` ↓${b.behind}`}</Text>}
             </Box>
           ) : null}
           {b.upstream && (
             <Box flexShrink={100} overflow="hidden">
-              <Text color={palette.muted} wrap="truncate-end">
+              <Text mono color={palette.muted} wrap="truncate-end">
                 {` ${b.upstream}`}
               </Text>
             </Box>
@@ -1707,11 +1707,11 @@ export const register: Register = (on, options) => {
       const hash = a.state === 'done' && a.kind === 'git commit' ? (a.detail.split(' ')[0] ?? '') : ''
       return (
         <Box flexDirection="row" marginLeft={2} flexShrink={0}>
-          <Text color={isFailed ? palette.deleted : palette.ink(a.tone)}>{icon + ' '}</Text>
-          <Text bold={a.state === 'running'} color={isFailed ? palette.deleted : palette.text}>
+          <Text mono color={isFailed ? palette.deleted : palette.ink(a.tone)}>{icon + ' '}</Text>
+          <Text mono bold={a.state === 'running'} color={isFailed ? palette.deleted : palette.text}>
             {a.state === 'running' ? `${a.label}…` : a.label}
           </Text>
-          {hash && <Text color={palette.muted}>{` ${hash}`}</Text>}
+          {hash && <Text mono color={palette.muted}>{` ${hash}`}</Text>}
         </Box>
       )
     }
@@ -1719,7 +1719,7 @@ export const register: Register = (on, options) => {
     // The terminal draws plain labels, so a quiet dot keeps two-word labels apart.
     const toolbar = (
       <Box flexDirection="row" flexWrap="wrap" columnGap={1}>
-        {isDesktop ? toolbarButtons.map(button) : toolbarButtons.flatMap((b, index) => (index === 0 ? [button(b)] : [<Text color={palette.faint}>·</Text>, button(b)]))}
+        {isDesktop ? toolbarButtons.map(button) : toolbarButtons.flatMap((b, index) => (index === 0 ? [button(b)] : [<Text mono color={palette.faint}>·</Text>, button(b)]))}
       </Box>
     )
     const gitIcon = unicode ? '± ' : '\u{e702} '
@@ -1741,11 +1741,11 @@ export const register: Register = (on, options) => {
       <Box flexDirection="column" minHeight={Math.max(1, e.props.scroll?.bodyRows ?? 1)} backgroundColor={theme.bg || undefined}>
         <Box flexDirection="row">
           <Box flexDirection="row" flexShrink={1} overflow="hidden">
-            <Text bold color={palette.isCustomTheme ? theme.accent : palette.text} wrap="truncate-start">
+            <Text mono bold color={palette.isCustomTheme ? theme.accent : palette.text} wrap="truncate-start">
               {repoName}
             </Text>
             {subPath ? (
-              <Text color={palette.muted} wrap="truncate-start">
+              <Text mono color={palette.muted} wrap="truncate-start">
                 {`/${subPath}`}
               </Text>
             ) : null}
@@ -1755,7 +1755,7 @@ export const register: Register = (on, options) => {
         </Box>
         {branchRow()}
         {!t.top && showHints && (
-          <Text color={palette.muted} wrap="truncate-end">
+          <Text mono color={palette.muted} wrap="truncate-end">
             {gitIcon}Git status starts after git init
           </Text>
         )}
@@ -1788,7 +1788,7 @@ export const register: Register = (on, options) => {
           <Box flexDirection="row" {...(isDesktop ? { flexWrap: 'wrap' as const } : {})}>
             {t.selected ? (
               <Box flexShrink={1} {...(isDesktop ? { minWidth: Math.min(24, Math.max(8, width - 18)) } : {})}>
-                <Text color={palette.muted} wrap="truncate-start">
+                <Text mono color={palette.muted} wrap="truncate-start">
                   selected: {t.selected !== t.root && inside(t.root, t.selected) ? t.selected.slice(t.root.endsWith('/') ? t.root.length : t.root.length + 1) : shortPath(t.selected)}
                 </Text>
               </Box>

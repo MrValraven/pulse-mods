@@ -211,7 +211,7 @@ const Rows: ClientModule<RowsProps, Local> = (props, surface) => {
     const tail = s.spin ? (frames[state.phase % frames.length] ?? '') : ''
     if (s.spin && !isDim) {
       return (
-        <Text color={color} bold={s.b}>
+        <Text mono color={color} bold={s.b}>
           {s.t + tail}
         </Text>
       )
@@ -219,23 +219,23 @@ const Rows: ClientModule<RowsProps, Local> = (props, surface) => {
     const palette = s.sh ? (s.dim ? props.tones[s.sh]?.dim : props.tones[s.sh]?.bright) : undefined
     if (!palette || isDim) {
       return (
-        <Text color={color ?? palette?.[0]} backgroundColor={s.bg} bold={s.b} strikethrough={s.s} italic={s.i} dimColor={isDim && !s.bg ? true : undefined}>
+        <Text mono color={color ?? palette?.[0]} backgroundColor={s.bg} bold={s.b} strikethrough={s.s} italic={s.i} dimColor={isDim && !s.bg ? true : undefined}>
           {s.t + tail}
         </Text>
       )
     }
     if (s.one) {
       return (
-        <Text color={shimmer(-1, state.phase, s.t.length, palette)}>
+        <Text mono color={shimmer(-1, state.phase, s.t.length, palette)}>
           {s.t}
         </Text>
       )
     }
     const chars = [...s.t]
     return (
-      <Text bold={s.b}>
+      <Text mono bold={s.b}>
         {chars.map((ch, i) => (
-          <Text color={shimmer(i, state.phase, chars.length, palette)}>{ch}</Text>
+          <Text mono color={shimmer(i, state.phase, chars.length, palette)}>{ch}</Text>
         ))}
       </Text>
     )
@@ -264,7 +264,7 @@ const Rows: ClientModule<RowsProps, Local> = (props, surface) => {
           {r.right.map(s => draw(s, drawnRow.isFaded, false))}
         </Box>
         {props.bar && (
-          <Text color={i >= props.bar.pos && i < props.bar.pos + props.bar.size ? props.bar.thumb : props.bar.track}>
+          <Text mono color={i >= props.bar.pos && i < props.bar.pos + props.bar.size ? props.bar.thumb : props.bar.track}>
             {i >= props.bar.pos && i < props.bar.pos + props.bar.size ? '┃' : '│'}
           </Text>
         )}
@@ -281,7 +281,7 @@ const Rows: ClientModule<RowsProps, Local> = (props, surface) => {
     } catch {}
     if (size + cost > TREE_BUDGET || drawn.length >= MAX_ROWS) {
       visible = i
-      drawn.push(<Text dimColor>{`  … ${drawnRows.length - i} more rows, collapse folders or use search`}</Text>)
+      drawn.push(<Text mono dimColor>{`  … ${drawnRows.length - i} more rows, collapse folders or use search`}</Text>)
       break
     }
     size += cost
