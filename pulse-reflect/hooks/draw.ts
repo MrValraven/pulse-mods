@@ -3,8 +3,10 @@
 // Pure functions, no runtime import from 'claude-code': a preview script can import this file as it is.
 
 // QueerPulse tokens, copied as hex: a mod cannot read CSS variables. The same palette as pulse-progress.
+// The pulse palette: coral, jade and lilac, the values pulse-cache-tax defines.
 export const CORAL = '#e8775a'
-export const ROSE = '#b0628f'
+export const JADE = '#4a8c6f'
+export const LILAC = '#8a72cf'
 export const FONT = "'JetBrains Mono','Geist Mono','IBM Plex Mono','SF Mono',ui-monospace,Menlo,'Source Code Pro',Consolas,monospace"
 
 const TEXT_LIGHT = '45,27,61'
@@ -22,6 +24,8 @@ const RULE_SIZE = 14
 const RULE_LINE = 21
 const RULE_FIRST_BASELINE = 37
 const BOTTOM_ROOM = 10
+/** From the rule's last baseline to the "Suggested" line's. */
+const SUGGESTED_GAP = 20
 // Rules are capped at 200 characters, so this only guards against a runaway estimate; a rule is never cut.
 const MAX_RULE_LINES = 12
 
@@ -29,8 +33,10 @@ export type Card = {
   rule: string
   /** How many times the person said it. */
   count: number
-  /** Rules waiting behind this one. */
-  waiting: number
+  /** This rule's place among the waiting ones, from 1. */
+  position: number
+  /** How many rules wait, this one included. */
+  total: number
   /** Where the check suggests saving it. */
   suggested: 'global' | 'project'
 }
@@ -105,23 +111,27 @@ export const wrapText = (text: string, size: number, maxWidth: number, maxLines:
 // Words.
 
 export const timesSaid = (count: number): string => (count <= 1 ? '' : count === 2 ? 'said twice' : `said ${count} times`)
-export const waitingText = (waiting: number): string => (waiting > 0 ? `${waiting} more waiting` : '')
+/** "1 of 3" while more than one rule waits; empty for a lone rule. */
+export const positionText = (position: number, total: number): string => (total > 1 ? `${position} of ${total}` : '')
+/** Where the check suggests saving the rule, in words. */
+export const suggestedText = (scope: Card['suggested']): string => `Suggested: ${scope === 'project' ? 'this repo' : 'every project'}`
 
 /** What the card says, for a reader that cannot see it. */
 export const cardAlt = (card: Card): string =>
   [
     `Learned rule: “${card.rule}”`,
-    `Suggested: ${card.suggested === 'project' ? 'this repo' : 'global'}`,
+    suggestedText(card.suggested),
     timesSaid(card.count),
-    waitingText(card.waiting),
+    positionText(card.position, card.total),
   ]
     .filter(Boolean)
     .map(sentence => `${sentence.charAt(0).toUpperCase()}${sentence.slice(1)}`)
     .join('. ')
 
 // ---------------------------------------------------------------------------
-// The card: an eyebrow (a coral dot, "Learned rule" in medium-weight mono, how often it was said, and the
-// queue on the right), then the rule itself in quotes, wrapped to the band's width.
+// The card: an eyebrow (a coral dot, "Learned rule" in medium-weight mono, how often it was said, and "1 of 3"
+// on the right while more wait), then the rule itself in quotes, wrapped to the band's width, then where the
+// check suggests saving it.
 
 export const ruleLines = (rule: string, width: number): string[] =>
   wrapText(`“${rule}”`, RULE_SIZE, Math.max(120, width - 6), MAX_RULE_LINES)
@@ -133,12 +143,13 @@ export const ruleLines = (rule: string, width: number): string[] =>
  */
 export const cardSvg = (card: Card, width: number, enteredMs?: number): { source: string; height: number } => {
   const lines = ruleLines(card.rule, width)
-  const height = RULE_FIRST_BASELINE + (lines.length - 1) * RULE_LINE + BOTTOM_ROOM
+  const suggestedBaseline = RULE_FIRST_BASELINE + (lines.length - 1) * RULE_LINE + SUGGESTED_GAP
+  const height = suggestedBaseline + BOTTOM_ROOM
   const said = timesSaid(card.count)
   const titleWidth = 14 + textWidth('Learned rule', 12.5) + (said ? 12 + textWidth(`· ${said}`, 12) : 0)
-  const fullWaiting = waitingText(card.waiting)
-  // A narrow band keeps the count and drops the words around it.
-  const waiting = fullWaiting && titleWidth + textWidth(fullWaiting, 12) + 16 > width ? `+${card.waiting}` : fullWaiting
+  const fullPosition = positionText(card.position, card.total)
+  // A narrow band keeps the numbers and drops the word between them.
+  const positionLabel = fullPosition && titleWidth + textWidth(fullPosition, 12) + 16 > width ? `${card.position}/${card.total}` : fullPosition
   const isEntering = enteredMs !== undefined && enteredMs >= 0 && enteredMs < ENTER_MS
   const enter = isEntering
     ? `.in{animation:in ${ENTER_MS}ms ${EASE} ${-Math.round(enteredMs)}ms both}@keyframes in{from{opacity:0;transform:translateY(5px)}}
@@ -158,14 +169,15 @@ export const cardSvg = (card: Card, width: number, enteredMs?: number): { source
 @media (prefers-color-scheme: dark){.tx{fill:rgb(${TEXT_DARK})}.m{fill:rgba(${TEXT_DARK},.52)}.ink{fill:${INK_DARK}}}
 ${enter}
 </style>
-<defs><linearGradient id="dot" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="${CORAL}"/><stop offset="1" stop-color="${ROSE}"/></linearGradient></defs>
+<defs><linearGradient id="dot" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="${CORAL}"/><stop offset="1" stop-color="${LILAC}"/></linearGradient></defs>
 <g${isEntering ? ' class="in"' : ''}>
 <circle cx="4" cy="${EYEBROW_BASELINE - 4.5}" r="3.5" fill="url(#dot)"/>
 <text x="14" y="${EYEBROW_BASELINE}"><tspan class="ink" font-family="${FONT}" font-size="12.5" font-weight="500">Learned rule</tspan>${
       said ? `<tspan class="m" font-family="${FONT}" font-size="12" dx="7">·</tspan><tspan class="m" font-family="${FONT}" font-size="12" dx="5">${said}</tspan>` : ''
     }</text>
-${waiting ? `<text class="m" x="${width}" y="${EYEBROW_BASELINE}" text-anchor="end" font-family="${FONT}" font-size="12" style="font-variant-numeric:tabular-nums">${waiting}</text>` : ''}
+${positionLabel ? `<text class="m" x="${width}" y="${EYEBROW_BASELINE}" text-anchor="end" font-family="${FONT}" font-size="12" style="font-variant-numeric:tabular-nums">${positionLabel}</text>` : ''}
 ${rule}
+<text class="m" x="0" y="${suggestedBaseline}" font-family="${FONT}" font-size="12">${xml(suggestedText(card.suggested))}</text>
 </g>
 </svg>`,
   }
