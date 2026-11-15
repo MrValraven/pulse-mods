@@ -1,13 +1,27 @@
 {
   "name": "pulse-blast-radius",
-  "version": "0.2.0",
-  "description": "Holds risky shell commands (rm -rf, git reset --hard, git clean, force push, migrations) and shows what they would change, with Proceed and Cancel buttons.",
+  "version": "0.3.0",
+  "description": "Holds risky Bash commands (deletes, destructive git, database resets and migrations, infra teardown), shows what they would change, and waits for Run command or Cancel command. Fork of anthropics/claude-code-playground blast-radius.",
   "author": {
-    "name": "Claude Code DevRel"
+    "name": "MrValraven"
   },
+  "license": "Apache-2.0",
+  "repository": "https://github.com/MrValraven/pulse-mods",
   "keywords": [
     "mods",
     "safety",
     "git"
-  ]
+  ],
+  "userConfig": {
+    "measureMigrations": {
+      "type": "string",
+      "title": "Measure migrations",
+      "description": "off: a held migration says its pending migrations are not listed, because listing them runs your project's code. on: before you answer, Blast Radius runs the tool's status command (manage.py showmigrations, bin/rails db:migrate:status, alembic history, prisma migrate status) and lists what is pending.",
+      "default": "off",
+      "options": [
+        "off",
+        "on"
+      ]
+    }
+  }
 }

@@ -38,8 +38,8 @@
     {
       "name": "pulse-blast-radius",
       "source": "./pulse-blast-radius",
-      "description": "Holds risky Bash commands (rm -rf, git reset --hard, git clean, force push, migrations), shows what they would change, and waits for Proceed or Cancel. Fork of anthropics/claude-code-playground blast-radius.",
-      "version": "0.2.0",
+      "description": "Holds risky Bash commands (deletes, destructive git, database resets and migrations, infra teardown), shows what they would change, and waits for Run command or Cancel command. Fork of anthropics/claude-code-playground blast-radius.",
+      "version": "0.3.0",
       "category": "mod"
     }
   ]
