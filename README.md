@@ -1,14 +1,15 @@
-<h1><img src="assets/banner.svg" alt="pulse-mods: Claude Code mods progress, cache-tax, filetree and reflect" width="100%"></h1>
+<h1><img src="assets/banner.svg" alt="pulse-mods: Claude Code mods progress, cache-tax, filetree, reflect, blast-radius and ports" width="100%"></h1>
 
 Personal Claude Code mods, published as one marketplace. Every mod name starts with `pulse-`.
 
 | Mod | What it does | Based on |
 |---|---|---|
-| [`pulse-progress`](pulse-progress) | A QueerPulse-coloured progress band above the prompt and a `/pulse` panel of subagents. It only watches. | [savvy-progress](https://github.com/JohnnyVizz/claude-kit/tree/main/plugins/savvy-progress) (MIT) |
-| [`pulse-cache-tax`](pulse-cache-tax) | Keeps the one-hour prompt cache warm during `/keepwarm` windows and holds a cold send once with its estimated rewrite cost. | [karanb192/cache-tax](https://github.com/karanb192/cache-tax) (MIT) |
+| [`pulse-progress`](pulse-progress) | A QueerPulse-coloured progress band above the prompt and a `/pulse` panel of subagents. It adds no tools and changes no prompts; `/pulse mods` checks GitHub for updates once a day. | [savvy-progress](https://github.com/JohnnyVizz/claude-kit/tree/main/plugins/savvy-progress) (MIT) |
+| [`pulse-cache-tax`](pulse-cache-tax) | Keeps the prompt cache warm during `/keepwarm` windows (one-hour or five-minute cache) and holds a cold send once with its estimated rewrite cost. | [karanb192/cache-tax](https://github.com/karanb192/cache-tax) (MIT) |
 | [`pulse-filetree`](pulse-filetree) | An IDE-style file tree pane that shows what Claude reads and writes. | [data-goblin/claude-code-filetree](https://github.com/data-goblin/claude-code-filetree) (MIT) |
 | [`pulse-reflect`](pulse-reflect) | Finds reusable corrections in short prompts and saves them to CLAUDE.md on one press. | [bayramannakov/claude-reflect](https://github.com/bayramannakov/claude-reflect) (MIT) |
-| [`pulse-blast-radius`](pulse-blast-radius) | Holds a risky Bash command (`rm -rf`, `git reset --hard`, force push, migrations), shows what it would change, and waits for Proceed or Cancel. | [blast-radius](https://github.com/anthropics/claude-code-playground/tree/main/claude-code/mods/blast-radius) (Apache-2.0) |
+| [`pulse-blast-radius`](pulse-blast-radius) | Holds a risky Bash command (`rm -rf`, `git reset --hard`, force push, migrations), shows what it would change, and waits for Run command or Cancel command. | [blast-radius](https://github.com/anthropics/claude-code-playground/tree/main/claude-code/mods/blast-radius) (Apache-2.0) |
+| [`pulse-ports`](pulse-ports) | Holds a command that would start a dev server on a port you keep for your own testing (3000 and your package.json ports by default) and offers a free port instead. | Original |
 
 Each mod has its own README with its commands, settings and everything it touches.
 
@@ -36,13 +37,13 @@ Each session runs a cached copy of every mod version. A merged pull request reac
    If you added a local clone, Claude Code reads the mods from that folder, so pull it first:
 
    ```bash
-   git -C path/to/pulse-mods pull --ff-only && claude plugin marketplace update pulse-mods
+   git -C path/to/pulse-mods pull --ff-only origin main && claude plugin marketplace update pulse-mods
    ```
 
 2. Update the mods you have installed (leave out any you don't use):
 
    ```bash
-   for mod in pulse-progress pulse-cache-tax pulse-filetree pulse-reflect pulse-blast-radius; do claude plugin update "$mod@pulse-mods"; done
+   for mod in pulse-progress pulse-cache-tax pulse-filetree pulse-reflect pulse-blast-radius pulse-ports; do claude plugin update "$mod@pulse-mods"; done
    ```
 
    `claude plugin list` shows the version each mod is on.
@@ -54,7 +55,7 @@ Each session runs a cached copy of every mod version. A merged pull request reac
 Sessions run a cached copy of each version, so every change to a mod needs a version bump:
 
 1. Edit the mod and bump `version` in its `.claude-plugin/plugin.json` and in `.claude-plugin/marketplace.json`.
-2. Run `node scripts/check-versions.mjs origin/main`. It fails when the two versions disagree, when a mod folder is missing from the marketplace, or when a mod changed without a bump. The same check runs on every pull request.
+2. Run `node scripts/check-versions.mjs origin/main`. It fails when the two versions disagree, when a mod folder is missing from the marketplace, or when a mod changed without a bump. The same check runs on every pull request. If you change `hooks/prices.ts`, change every copy (pulse-progress and pulse-cache-tax) and run `node scripts/check-prices.mjs`, which CI also runs.
 3. Add a line to [CHANGELOG.md](CHANGELOG.md), open a pull request and merge it.
 4. Tag the release as `<mod>-v<version>`, for example `pulse-reflect-v3.3.0`.
 5. Follow [Updating the mods](#updating-the-mods) to load the new version.

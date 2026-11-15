@@ -17,3 +17,5 @@ jobs:
           fetch-depth: 0
       - name: Mods and marketplace agree
         run: node scripts/check-versions.mjs ${{ github.event_name == 'pull_request' && format('origin/{0}', github.base_ref) || '' }}
+      - name: Price tables match
+        run: node scripts/check-prices.mjs
