@@ -41,6 +41,13 @@
       "description": "Holds risky Bash commands (deletes, destructive git, database resets and migrations, infra teardown), shows what they would change, and waits for Run command or Cancel command. Fork of anthropics/claude-code-playground blast-radius.",
       "version": "0.3.0",
       "category": "mod"
+    },
+    {
+      "name": "pulse-ports",
+      "source": "./pulse-ports",
+      "description": "Holds commands that would start a dev server on a port you keep for your own testing, and offers a free port instead.",
+      "version": "0.1.0",
+      "category": "mod"
     }
   ]
 }
