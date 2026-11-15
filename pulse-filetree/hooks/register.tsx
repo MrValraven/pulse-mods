@@ -3,8 +3,46 @@ import { LINUX_LAUNCH, openCommand, openWithCommand } from './open'
 import type { ButtonProps } from './button'
 
 import type { Activity, FileNode, FileTree, Theme } from '../types'
-import { BRANCH_ICON, chainOf, type GitAction, gitActions, readOnly, readTargets, resolve } from './git'
-import type { RowSpec, RowsProps, Seg } from './rows'
+import { BRANCH_ICON, chainOf, type GitAction, gitActions, readOnly, readTargets, removedTargets, resolve } from './git'
+import { type RowSpec, type RowsProps, type Seg, specCost } from './rows'
+import {
+  backgroundCause,
+  bashFailureCause,
+  causeOf,
+  copyFailure,
+  countsLegend,
+  exitCause,
+  gitUnavailable,
+  MIN_COLUMNS,
+  isMissingCause,
+  pathCheckReply,
+  runningChips,
+  searchUnavailable,
+  SELECTED_SUFFIX,
+  startBlockedReason,
+  helpText,
+  TOAST_PREFIX,
+} from './copy'
+import {
+  type ColumnMode,
+  type Ghost,
+  GHOST_PREFIX,
+  gutterMark,
+  homeRelative,
+  isListable,
+  liveGhosts,
+  nextColumn,
+  nextGhostEnd,
+  outsideOf,
+  type OutsideTouch,
+  barFor,
+  recordOutside,
+  type RowKeyAction,
+  rowKeyAction,
+  type TouchKind,
+  touchTone,
+  withGhosts,
+} from './marks'
 import { CHEVRON_CLOSED, CHEVRON_OPEN, fileBadge, fileIcon, folderInk, onInkFor } from './icons'
 import { type LucideName, lucideNameFor, lucideSvg } from './lucide'
 import { buildPalette, dateLabel, gitInk, inkOnPane, mix, type Palette, RECENT_MS, RECENT_SOFT_MS, recentLevel, truncateMiddle, widthOf } from './look'
@@ -25,6 +63,7 @@ import {
   parseTheme,
   posix,
   relative,
+  type Row,
   dropBelow,
   useDrives,
   rollCounts,
@@ -85,7 +124,7 @@ let scanning: Promise<void> | null = null
 let scanJobs: Job[] = []
 let gitRun: Promise<void> | null = null
 let gitNext: Promise<void> | null = null
-let queuedReads: string[] = []
+let queuedReads: QueuedRead[] = []
 let showReads = true
 let showWrites = true
 let searchIndex: { root: string; paths: Promise<string[]> } | null = null
@@ -120,6 +159,19 @@ const listedRoots = new Set<string>()
 let recentTimer: Timer | null = null
 // The search still running, so an empty tree can say it is searching while it runs.
 let pendingQuery = ''
+// Counts every write to the tree state, so the visible rows are worked out once per change.
+let treeVersion = 0
+let rowsMemo: { version: number; ghostKey: string; rows: Row[] } | null = null
+// True while the pane is open because the start setting opened it, so a terminal too narrow
+// for the sidebar closes it and says why.
+let openedByStart = false
+// Files Claude read or wrote outside the tree's folder, newest first.
+let outsideTouches: OutsideTouch[] = []
+// Files Claude deleted, drawn as faded rows for a while; one timer redraws when the next ends.
+const ghosts = new Map<string, Ghost>()
+let ghostTimer: Timer | null = null
+
+type QueuedRead = { path: string; isSubagent: boolean }
 
 function osName($: EngineInterface): Promise<'linux' | 'darwin' | 'win32'> {
   platform ??= (async () => {
@@ -148,6 +200,19 @@ async function get($: EngineInterface): Promise<FileTree> {
 
 async function put($: EngineInterface, fn: (t: FileTree) => FileTree): Promise<void> {
   await update($, TREE, cur => fn({ ...emptyTree(''), ...cur }))
+  // Counted after the write lands: a reader that took the version before reading the state
+  // never pairs an older state with a newer version.
+  treeVersion += 1
+}
+
+// The tree's visible rows, deleted files' ghosts included, worked out once per tree change.
+// `version` is treeVersion as read before the state was.
+function rowsOf(t: FileTree, version: number, ghostList: readonly Ghost[]): Row[] {
+  const ghostKey = ghostList.map(ghost => ghost.node.id).join('\n')
+  if (rowsMemo && rowsMemo.version === version && rowsMemo.ghostKey === ghostKey) return rowsMemo.rows
+  const rows = visibleRows(ghostList.length ? { ...t, nodes: withGhosts(t.nodes, ghostList) } : t)
+  rowsMemo = { version, ghostKey, rows }
+  return rows
 }
 
 function patch($: EngineInterface, fn: (t: FileTree) => Partial<FileTree>) {
@@ -184,7 +249,7 @@ async function list($: EngineInterface, dir: string): Promise<FileNode[] | null>
     if (!(await exists($, dir))) return []
     if (!unreadable.has(dir)) {
       unreadable.add(dir)
-      $.ui.toast(`could not list ${shortPath(dir)}: ${err instanceof Error ? err.message : String(err)}`)
+      $.ui.toast(`${TOAST_PREFIX}could not list ${shortPath(dir)}: ${err instanceof Error ? err.message : String(err)}`)
     }
     return null
   }
@@ -215,24 +280,32 @@ async function detectRepo($: EngineInterface): Promise<void> {
   if (!t.root) return
   let top = ''
   let prefix = ''
+  // Outside a repo git says so and that is no failure; anything else it says is.
+  let gitError = ''
   try {
     const run = await git($, t.root, ['rev-parse', '--show-prefix', '--show-toplevel'], 5_000)
     const [p = '', tl = ''] = run.exitCode === 0 ? run.stdout.split('\n') : []
     prefix = p.trim()
     top = tl.trim()
-  } catch {
+    if (run.exitCode !== 0 && !/not a git repository/i.test(run.stderr)) gitError = `git rev-parse ${exitCause(run)}`
+  } catch (err) {
     top = ''
+    gitError = `git could not run: ${causeOf(err)}`
   }
-  await patch($, cur => (cur.root === t.root ? { top, prefix } : {}))
+  await patch($, cur => (cur.root === t.root ? { top, prefix, gitError } : {}))
 }
 
 async function readGit($: EngineInterface): Promise<void> {
   const t = await get($)
   if (!t.root || !t.top) return
   const root = t.root
+  const fail = (cause: string) => patch($, cur => (cur.root === root ? { gitError: cause } : {}))
   try {
     const status = await git($, root, ['status', '--porcelain=v1', '-b', '-z', '--ignored=traditional', '--untracked-files=normal', '--', '.'])
-    if (status.exitCode !== 0) return
+    if (status.exitCode !== 0) {
+      await fail(`git status ${exitCause(status)}`)
+      return
+    }
     const parsed = parseGit(status.stdout, root, t.prefix)
     const diff: Record<string, [number, number]> = {}
     const head = await git($, root, ['diff', 'HEAD', '--numstat', '-z', '--', '.'])
@@ -242,7 +315,7 @@ async function readGit($: EngineInterface): Promise<void> {
       const others = await git($, root, ['ls-files', '-o', '--exclude-standard', '-z', '--', ...parsed.untrackedDirs.map(d => d.slice(root.length + 1) || '.')])
       if (others.exitCode === 0) for (const rel of others.stdout.split('\0').filter(Boolean)) files[join(root, rel)] = 'new'
     }
-    for (const path of Object.keys(diff)) if (files[path] === 'new') delete diff[path]
+    for (const path of Object.keys(diff)) if (files[path] === 'new' || files[path] === 'add') delete diff[path]
     dirty = { root, files }
     await patch($, cur =>
       cur.root === root
@@ -253,11 +326,12 @@ async function readGit($: EngineInterface): Promise<void> {
             branch: parsed.branch,
             counts: rollCounts(files, root),
             diff: rollUp(diff, root),
+            gitError: '',
           }
         : {},
     )
-  } catch {
-    return
+  } catch (err) {
+    await fail(`git status could not run: ${causeOf(err)}`)
   }
 }
 
@@ -288,11 +362,16 @@ async function reset($: EngineInterface, root: string, focus = false): Promise<v
   recentTouches.clear()
   recentTimer?.cancel()
   recentTimer = null
+  ghosts.clear()
+  ghostTimer?.cancel()
+  ghostTimer = null
   listedRoots.delete(root)
   await put($, () => ({ ...emptyTree(root), showHidden: prev.showHidden, showSize: prev.root ? prev.showSize : sizeDefault }))
   const title = `Files: ${root.split('/').pop() || root}`
-  if (focus) await $.ui.open({ id: PANE, title, focus: true })
-  else if (!noDock) await $.ui.open({ id: PANE, title })
+  if (focus) {
+    openedByStart = false
+    await $.ui.open({ id: PANE, title, focus: true })
+  } else if (!noDock) await $.ui.open({ id: PANE, title })
   await loadDirs($, [root])
   await detectRepo($)
   await refreshGit($)
@@ -537,6 +616,100 @@ function scheduleRecent($: EngineInterface, now: number): void {
   })
 }
 
+// Sets the one timer for the moment the next ghost row ends; ended ones are dropped on the way.
+function scheduleGhosts($: EngineInterface, now: number): void {
+  ghostTimer?.cancel()
+  ghostTimer = null
+  const live = new Set(liveGhosts([...ghosts.values()], now).map(ghost => ghost.node.id))
+  for (const id of [...ghosts.keys()]) if (!live.has(id)) ghosts.delete(id)
+  const next = nextGhostEnd([...ghosts.values()], now)
+  if (next === null) return
+  ghostTimer = $.clock.after(next - now + 50, () => {
+    ghostTimer = null
+    void $.ui.invalidate('ui.render')
+    void $.clock.now().then(later => scheduleGhosts($, later))
+  })
+}
+
+// The ghosts to draw now: still in their time and absent from the tree. A pure filter: a ghost is
+// added while its node is still listed (the scan that drops the node runs after), so a present
+// path only hides its ghost and never deletes it. A file that truly came back keeps its ghost
+// hidden until scheduleGhosts lets it expire, and its real row draws and takes clicks meanwhile.
+function shownGhosts(t: FileTree, now: number): Ghost[] {
+  if (ghosts.size === 0) return []
+  const present = new Set(t.nodes.map(node => node.id))
+  return liveGhosts([...ghosts.values()], now).filter(ghost => !present.has(ghost.node.id))
+}
+
+// Keeps rows Claude deleted in the tree as ghosts.
+async function addGhosts($: EngineInterface, nodes: FileNode[]): Promise<void> {
+  if (nodes.length === 0) return
+  const at = await $.clock.now()
+  for (const node of nodes) ghosts.set(node.id, { node, at })
+  scheduleGhosts($, at)
+  void $.ui.invalidate('ui.render')
+}
+
+// After a command that names paths to delete: the rows whose files are gone stay as ghosts, and
+// gone paths outside the folder join the outside list as writes.
+async function settleRemoval($: EngineInterface, removal: Removal): Promise<void> {
+  if (!showWrites) return
+  const gone: FileNode[] = []
+  for (const node of removal.nodes) if (!(await exists($, node.id))) gone.push(node)
+  await addGhosts($, gone)
+  const root = (await get($)).root
+  const goneOutside: string[] = []
+  for (const path of removal.paths) if (root && !inside(root, path) && !(await exists($, path))) goneOutside.push(path)
+  if (goneOutside.length) await noteOutside($, goneOutside, 'write', removal.isSubagent)
+}
+
+// Whether a tool call's loop is a subagent or a teammate. tool.call carries an agentId in any loop
+// other than the main one, the engine's own forks (compaction, memory) and a workflow's agents
+// included; those carry ids `$.agent.list()` never names, so only a listed id counts. Answers are
+// kept per id, a listed one for good and an unlisted one for a few seconds, since the list can
+// lag a spawn.
+const agentLoops = new Map<string, { isSubagent: boolean; at: number }>()
+// With `waitMs`, a list slower than that counts as the main loop for this answer; the lookup still
+// finishes and its answer is kept for the next call.
+async function isSubagentLoop($: EngineInterface, agentId: string | undefined, waitMs?: number): Promise<boolean> {
+  if (!agentId) return false
+  const lookup = lookUpAgent($, agentId)
+  if (waitMs === undefined) return lookup
+  return Promise.race([lookup, $.clock.sleep(waitMs).then(() => false)])
+}
+
+async function lookUpAgent($: EngineInterface, agentId: string): Promise<boolean> {
+  const now = await $.clock.now()
+  const known = agentLoops.get(agentId)
+  if (known && (known.isSubagent || now - known.at < 5_000)) return known.isSubagent
+  let isSubagent = false
+  try {
+    isSubagent = (await $.agent.list()).some(agent => agent.id === agentId)
+  } catch {
+    isSubagent = false
+  }
+  agentLoops.set(agentId, { isSubagent, at: now })
+  return isSubagent
+}
+
+// A tree update that runs off the tool's path and threw: the cause goes to the debug log, since
+// the tool call it followed has already answered.
+function logFailure($: EngineInterface, what: string, error: unknown): void {
+  $.ui.log(`pulse-filetree: ${what} stopped: ${causeOf(error)}`, { to: 'debug' })
+}
+
+// Lists files Claude touched outside the tree's folder.
+async function noteOutside($: EngineInterface, paths: string[], kind: TouchKind, isSubagent: boolean): Promise<void> {
+  const listable = paths.filter(isListable)
+  if (listable.length === 0) return
+  const at = await $.clock.now()
+  outsideTouches = recordOutside(
+    outsideTouches,
+    listable.map(path => ({ path, kind, at, isSubagent })),
+  )
+  void $.ui.invalidate('ui.render')
+}
+
 async function followCwd($: EngineInterface): Promise<boolean> {
   if (!follow) return false
   const cwd = await cwdOf($)
@@ -547,8 +720,9 @@ async function followCwd($: EngineInterface): Promise<boolean> {
 }
 
 type Pending = { actions: GitAction[]; ids: number[]; command: string; head: string }
-type Job = { actions: GitAction[]; since: Since; initRepo: boolean; readOnly: boolean }
-type Background = { p: Pending | null; job: Job; reads: string[] }
+type Job = { actions: GitAction[]; since: Since; initRepo: boolean; readOnly: boolean; isSubagent: boolean }
+type Removal = { paths: string[]; nodes: FileNode[]; isSubagent: boolean }
+type Background = { p: Pending | null; job: Job; reads: QueuedRead[]; removal: Removal | null }
 type GitOperation = NonNullable<BuiltinToolResults['Bash']['gitOperation']>
 type Outcome = { state: 'done' | 'failed'; label: string; detail: string }
 
@@ -561,7 +735,7 @@ const PROOF: Record<string, (op: GitOperation) => boolean> = {
   'pr comment': op => op.pr?.action === 'commented',
 }
 
-async function startGit($: EngineInterface, actions: GitAction[]): Promise<number[]> {
+async function startGit($: EngineInterface, actions: GitAction[], isSubagent: boolean): Promise<number[]> {
   const now = await $.clock.now()
   const ids = actions.map(() => ++activityId)
   await setActivities($, cur => [
@@ -576,6 +750,7 @@ async function startGit($: EngineInterface, actions: GitAction[]): Promise<numbe
       tone: a.tone,
       nerd: a.icon.nerd,
       plain: a.icon.plain,
+      ...(isSubagent ? { isSubagent: true } : {}),
     })),
   ])
   return ids
@@ -590,16 +765,18 @@ async function headOf($: EngineInterface, cwd: string): Promise<string> {
   }
 }
 
-async function outcomes($: EngineInterface, p: Pending, ok: boolean, op: GitOperation | undefined): Promise<Outcome[]> {
+// `cause` says why the command failed (its exit code and first stderr line); a commit that
+// exited cleanly yet left HEAD where it was says that instead.
+async function outcomes($: EngineInterface, p: Pending, ok: boolean, op: GitOperation | undefined, cause: string): Promise<Outcome[]> {
   const chain = chainOf(p.command)
   const after = p.actions.some(a => a.verb === 'commit') && !op?.commit ? await headOf($, (await get($)).root || (await cwdOf($))) : ''
   return p.actions.map(a => {
     if (a.verb === 'commit') {
       const sha = op?.commit?.sha || (after && after !== p.head ? after : '')
-      return sha ? { state: 'done', label: a.done, detail: sha.slice(0, 7) } : { state: 'failed', label: `${a.verb} failed`, detail: '' }
+      return sha ? { state: 'done', label: a.done, detail: sha.slice(0, 7) } : { state: 'failed', label: `${a.verb} failed`, detail: ok ? 'HEAD stayed on the same commit' : cause }
     }
     if ((op && PROOF[a.verb]?.(op)) || (ok && chain.and)) return { state: 'done', label: a.done, detail: '' }
-    if (!ok && chain.and && chain.size === 1) return { state: 'failed', label: `${a.verb} failed`, detail: '' }
+    if (!ok && chain.and && chain.size === 1) return { state: 'failed', label: `${a.verb} failed`, detail: cause }
     return { state: 'done', label: `ran ${a.kind}`, detail: '' }
   })
 }
@@ -616,31 +793,33 @@ async function finishGit($: EngineInterface, p: Pending, results: Outcome[]): Pr
   $.clock.after(ACTIVITY_TTL_MS + 500, () => void setActivities($, cur => cur.filter(a => a.state === 'running' || a.at > now)))
 }
 
-function failAll(p: Pending): Outcome[] {
-  return p.actions.map(a => ({ state: 'failed', label: `${a.verb} failed`, detail: '' }))
+function failAll(p: Pending, cause: string): Outcome[] {
+  return p.actions.map(a => ({ state: 'failed', label: `${a.verb} failed`, detail: cause }))
 }
 
 function proven(p: Pending | null, results: Outcome[]): GitAction[] {
   return p ? p.actions.filter((_, i) => results[i]?.state !== 'failed') : []
 }
 
-function taskEnds(text: string): [string, string][] {
+function taskEnds(text: string): [string, string, string][] {
   return [...text.matchAll(/<task-notification>([\s\S]*?)<\/task-notification>/g)].flatMap(m => {
     const id = /<task-id>([^<]*)<\/task-id>/.exec(m[1] ?? '')?.[1]?.trim()
     const status = /<status>([^<]*)<\/status>/.exec(m[1] ?? '')?.[1]?.trim()
-    return id && status ? [[id, status] as [string, string]] : []
+    const summary = /<summary>([^<]*)<\/summary>/.exec(m[1] ?? '')?.[1]?.trim() ?? ''
+    return id && status ? [[id, status, summary] as [string, string, string]] : []
   })
 }
 
 async function settleBackground($: EngineInterface, text: string): Promise<void> {
   if (background.size === 0 || !text.includes('<task-notification>')) return
-  for (const [id, status] of taskEnds(text)) {
+  for (const [id, status, summary] of taskEnds(text)) {
     const task = background.get(id)
     if (!task) continue
     background.delete(id)
     const ok = status === 'completed'
-    const results = task.p ? await outcomes($, task.p, ok, undefined) : []
+    const results = task.p ? await outcomes($, task.p, ok, undefined, backgroundCause(status, summary)) : []
     if (task.p) await finishGit($, task.p, results)
+    if (task.removal) await settleRemoval($, task.removal)
     if (showReads) queuedReads.push(...task.reads)
     scheduleScan($, { ...task.job, actions: proven(task.p, results) })
   }
@@ -692,7 +871,7 @@ async function copyPath($: EngineInterface, id: string, absolute: boolean, surfa
   const t = await get($)
   const text = !absolute && id !== t.root && inside(t.root, id) ? id.slice(t.root.endsWith('/') ? t.root.length : t.root.length + 1) : id
   const done = await $.ui.copy({ text, ...(surface ? { surface: surface as 'terminal' } : {}) })
-  $.ui.toast(done.isCopied ? `Copied ${text}` : 'Could not copy the path')
+  $.ui.toast(done.isCopied ? `${TOAST_PREFIX}copied ${text}` : copyFailure(done.reason))
 }
 
 async function exists($: EngineInterface, path: string): Promise<boolean> {
@@ -714,11 +893,24 @@ async function afterBash($: EngineInterface, jobs: Job[]): Promise<void> {
   const writers = jobs.filter(j => !j.readOnly)
   const since = (writers.length ? writers : jobs).reduce((a, j) => (j.since.ms < a.ms ? j.since : a), (writers[0] ?? jobs[0])?.since ?? { ms: 0, mark: '', os: 'linux' as const })
   const writes = !jobs.every(j => j.readOnly)
+  // Writes the scan finds cannot be told apart by command, so they take the subagent tone only
+  // when every command that may have written ran in a subagent.
+  const isSubagentWrite = writers.length > 0 && writers.every(j => j.isSubagent)
   const before = dirty.root === t.root ? dirty.files : {}
   if (jobs.some(j => j.initRepo)) await detectRepo($)
   else if (!t.top && (await exists($, join(t.root, '.git')))) await detectRepo($)
   const probed = await get($)
   if (probed.top && (writes || probed.top !== t.top)) await refreshGit($)
+  // Files git newly reports deleted after a command that may write: Claude deleted them, so
+  // their rows stay a while as ghosts.
+  if (writes && dirty.root === t.root) {
+    const deleted = new Set(Object.entries(dirty.files).filter(([path, change]) => change === 'del' && before[path] !== 'del').map(([path]) => path))
+    // git reports `git rm --cached` as deleted while the file stays on disk: only a path that is
+    // gone becomes a ghost.
+    const gone: FileNode[] = []
+    for (const node of t.nodes) if (deleted.has(node.id) && !(await exists($, node.id))) gone.push(node)
+    if (gone.length) await addGhosts($, gone)
+  }
   if (writes) {
     searchIndex = null
     await staleSizes($)
@@ -742,19 +934,29 @@ async function afterBash($: EngineInterface, jobs: Job[]): Promise<void> {
       return { expanded: cur.expanded.filter(id => ids.has(id)) }
     })
     const present = new Set((await get($)).nodes.map(n => n.id))
-    const touchTone = actions.find(a => !['commit', 'push', 'add'].includes(a.verb))?.tone ?? 'orange'
-    if (showWrites) for (const id of hits) if (present.has(id)) tones[id] = touchTone
+    const writeTone = actions.find(a => !['commit', 'push', 'add'].includes(a.verb))?.tone ?? touchTone('write', isSubagentWrite)
+    if (showWrites) for (const id of hits) if (present.has(id)) tones[id] = writeTone
   }
   if (showReads) {
-    const found: string[] = []
-    for (const r of reads) {
+    const found: QueuedRead[] = []
+    const outside: QueuedRead[] = []
+    for (const read of reads) {
       if (found.length >= READ_REVEAL_LIMIT) break
-      if (r !== t.root && inside(t.root, r) && !underAny(r, ignored, t.root) && (await exists($, r))) found.push(r)
+      if (read.path === t.root) continue
+      if (!inside(t.root, read.path)) {
+        if (outside.length < READ_REVEAL_LIMIT && (await exists($, read.path))) outside.push(read)
+        continue
+      }
+      if (!underAny(read.path, ignored, t.root) && (await exists($, read.path))) found.push(read)
+    }
+    for (const isSubagent of [false, true]) {
+      const paths = outside.filter(read => read.isSubagent === isSubagent).map(read => read.path)
+      if (paths.length) await noteOutside($, paths, 'read', isSubagent)
     }
     if (found.length) {
-      await revealPaths($, found)
+      await revealPaths($, found.map(read => read.path))
       const shown = new Set((await get($)).nodes.map(n => n.id))
-      for (const r of found) if (shown.has(r) && !tones[r]) tones[r] = 'purple'
+      for (const read of found) if (shown.has(read.path) && !tones[read.path]) tones[read.path] = touchTone('read', read.isSubagent)
     }
   }
   if (showWrites && actions.length) {
@@ -792,14 +994,17 @@ function scheduleScan($: EngineInterface, job: Job): void {
   })
 }
 
-async function touched($: EngineInterface, paths: string[], tone: string, show: boolean): Promise<void> {
-  if (tone !== 'purple' && previewed && paths.map(posix).includes(previewed.path)) previewed = null
+async function touched($: EngineInterface, paths: string[], kind: TouchKind, show: boolean, isSubagent: boolean): Promise<void> {
+  const tone = touchTone(kind, isSubagent)
+  if (kind === 'write' && previewed && paths.map(posix).includes(previewed.path)) previewed = null
   if (await followCwd($)) return
   const t = await get($)
   if (!t.root) return
+  const outside = paths.map(posix).filter(p => !inside(t.root, p))
+  if (outside.length && show) await noteOutside($, outside, kind, isSubagent)
   const within = paths.map(posix).filter(p => inside(t.root, p))
   if (within.length === 0) return
-  if (tone !== 'purple') {
+  if (kind === 'write') {
     searchIndex = null
     await staleSizes($, within)
     await revealPaths($, within.map(dirname))
@@ -840,18 +1045,23 @@ async function walk($: EngineInterface, root: string, depth: number, limit: numb
   return out
 }
 
-async function listAll($: EngineInterface, t: FileTree): Promise<string[] | null> {
+// Every file search can match, or why the list could not be built. Inside a repo git lists
+// tracked and untracked files and leaves out what .gitignore ignores; outside one, find walks six
+// levels and skips the pruned folders. find often exits non-zero over one unreadable folder while
+// still listing the rest, so only a run that could not start counts as a failure there.
+async function listAll($: EngineInterface, t: FileTree): Promise<{ paths: string[] } | { cause: string }> {
+  const tool = t.top ? 'git ls-files' : 'find'
   try {
-    if (!t.top && (await osName($)) === 'win32') return await walk($, t.root, rootOfDisk(t.root) ? 3 : 6, 20_000)
+    if (!t.top && (await osName($)) === 'win32') return { paths: await walk($, t.root, rootOfDisk(t.root) ? 3 : 6, 20_000) }
     const run = t.top
       ? await git($, t.root, ['ls-files', '-co', '--exclude-standard', '-z'], 10_000)
       : await $.process.run(['find', '-H', t.root, '-xdev', '-maxdepth', rootOfDisk(t.root) ? '3' : '6', ...pruneArgs(t.root), '-type', 'f', '-print0'], { timeoutMs: 10_000 })
-    if (t.top && run.exitCode !== 0) return null
+    if (t.top && run.exitCode !== 0) return { cause: `${tool} ${exitCause(run)}` }
     const paths = run.stdout.split('\0').filter(Boolean)
     if (run.isStdoutTruncated) paths.pop()
-    return paths.map(p => (isAbsolute(p) ? p : join(t.root, p)))
-  } catch {
-    return null
+    return { paths: paths.map(p => (isAbsolute(p) ? p : join(t.root, p))) }
+  } catch (err) {
+    return { cause: `${tool} could not run: ${causeOf(err)}` }
   }
 }
 
@@ -859,9 +1069,12 @@ function indexPaths($: EngineInterface, t: FileTree): Promise<string[]> {
   if (searchIndex?.root !== t.root) {
     const index: { root: string; paths: Promise<string[]> } = {
       root: t.root,
-      paths: listAll($, t).then(paths => {
-        if (paths === null && searchIndex === index) searchIndex = null
-        return paths ?? []
+      paths: listAll($, t).then(async listed => {
+        const searchError = 'cause' in listed ? listed.cause : ''
+        // A failed list is dropped, so the next keystroke tries again.
+        if (searchError && searchIndex === index) searchIndex = null
+        await patch($, cur => (cur.root === t.root && cur.searchError !== searchError ? { searchError } : {}))
+        return 'paths' in listed ? listed.paths : []
       }),
     }
     searchIndex = index
@@ -1005,17 +1218,17 @@ async function openFile($: EngineInterface, path: string, external = false): Pro
   const { argv, init } = custom ? { argv: os === 'linux' ? ['sh', '-c', LINUX_LAUNCH, 'sh', ...custom] : custom, init: { timeoutMs: 10_000 } } : openCommand(os, path)
   try {
     const run = await $.process.run(argv, init)
-    if (run.exitCode !== 0) $.ui.toast(`could not open ${path} with ${custom?.[0] ?? argv[0]}: ${run.stderr.trim().split('\n')[0] || `exit ${run.exitCode}`}`)
-  } catch {
-    $.ui.toast(`could not open ${path} with ${custom?.[0] ?? argv[0]}`)
+    if (run.exitCode !== 0) $.ui.toast(`${TOAST_PREFIX}could not open ${path} with ${custom?.[0] ?? argv[0]}: ${exitCause(run)}`)
+  } catch (err) {
+    $.ui.toast(`${TOAST_PREFIX}could not open ${path} with ${custom?.[0] ?? argv[0]}: ${causeOf(err)}`)
   }
 }
 
 async function quickLook($: EngineInterface, path: string): Promise<void> {
   try {
     await $.process.run(['sh', '-c', '(nohup qlmanage -p "$1" >/dev/null 2>&1 &); sleep 0.4; osascript -e \'tell application "System Events" to set frontmost of first process whose name is "qlmanage" to true\' >/dev/null 2>&1 || true', 'sh', path], { timeoutMs: 10_000 })
-  } catch {
-    $.ui.toast(`could not preview ${path} with Quick Look`)
+  } catch (err) {
+    $.ui.toast(`${TOAST_PREFIX}could not preview ${path} with Quick Look: ${causeOf(err)}`)
   }
 }
 
@@ -1083,6 +1296,40 @@ async function pressHeader($: EngineInterface, id: string): Promise<void> {
   else if (id === 'external' && t.preview) await openFile($, t.preview, true)
 }
 
+// `s` in the rows: the right column goes date, age, size and back to date. The age column redraws
+// once a minute while it shows.
+async function cycleColumn($: EngineInterface): Promise<void> {
+  const t = await get($)
+  const mode: ColumnMode = t.showSize ? 'size' : showAge ? 'age' : 'date'
+  const next = nextColumn(mode)
+  if (next !== 'size') showAge = next === 'age'
+  if (showAge && !ageTick) ageTick = $.clock.every(AGE_TICK_MS, () => $.ui.invalidate('ui.render'))
+  else if (!showAge && ageTick) {
+    ageTick.cancel()
+    ageTick = null
+  }
+  await patch($, () => ({ showSize: next === 'size' }))
+  void $.ui.invalidate('ui.render')
+}
+
+async function runRowKey($: EngineInterface, action: RowKeyAction): Promise<void> {
+  if (action === 'dotfiles') await pressHeader($, 'hidden')
+  else if (action === 'column') await cycleColumn($)
+  else if (action === 'collapse') await pressHeader($, 'collapse')
+  else if (action === 'reload') await pressHeader($, 'refresh')
+  else if (action === 'up') await pressHeader($, 'up')
+  else if (action === 'search') {
+    const moved = await $.ui.focus({ requestId: PANE, key: 'q' })
+    if (moved.deny) $.ui.toast(`${TOAST_PREFIX}could not move to the search field: ${moved.deny}`)
+  }
+}
+
+// "Clear list" under the tree: forgets the files touched outside the folder.
+function clearOutside($: EngineInterface): void {
+  outsideTouches = []
+  void $.ui.invalidate('ui.render')
+}
+
 function shortPath(path: string): string {
   return home && inside(home, path) ? `~${path.slice(home.length)}` : path
 }
@@ -1099,7 +1346,7 @@ export const register: Register = (on, options) => {
   openWithSetting = typeof options?.open === 'string' ? options.open : ''
   noDock = options?.start === 'off'
   on('session.start', async ($, e, next) => {
-    await $.command.register({ name: 'filetree', description: 'Show the file tree; args: [path] (no path = cwd)' })
+    await $.command.register({ name: 'filetree', description: 'Show the file tree; args: [path] (no path = cwd), or help for the keys and settings' })
     const windows = (await $.env.get('OS')) === 'Windows_NT'
     useDrives(windows)
     home = posix(((await $.env.get('HOME')) || (await $.env.get('USERPROFILE')) || '').replace(/[\\/]+$/, ''))
@@ -1120,8 +1367,11 @@ export const register: Register = (on, options) => {
       const t = await get($)
       if (t.flashOn) await patch($, () => ({ flash: [], flashDim: [], flashOn: false, flashTones: {} }))
       if (t.preview) await patch($, () => ({ preview: '', previewTop: 0 }))
-      await setActivities($, cur => cur.map(a => (a.state === 'running' ? { ...a, state: 'failed', label: `${a.kind} interrupted` } : a)))
+      await setActivities($, cur => cur.map(a => (a.state === 'running' ? { ...a, state: 'failed', label: `${a.kind} interrupted`, detail: 'the session restarted before it finished' } : a)))
       const cwd = await cwdOf($)
+      // The pane the start setting opens meets the same terminal checks as /filetree; its first
+      // drawing closes it and says why when the terminal is too narrow or not fullscreen.
+      if (!noDock) openedByStart = true
       if (!t.root || t.nodes.length === 0 || (follow && t.root !== cwd)) await reset($, cwd)
       else if (!noDock) await $.ui.open({ id: PANE, title: `Files: ${t.root.split('/').pop() || t.root}` })
     })()
@@ -1129,17 +1379,40 @@ export const register: Register = (on, options) => {
   })
 
   on('command.run', { command: 'filetree' }, async ($, e) => {
+    // `help` answers anywhere and opens nothing; a folder named help opens as ./help.
+    if ((e.args ?? '').trim() === 'help') return { text: helpText() }
     // The layout checks are the terminal's: the desktop app docks the pane itself and
     // reports no fullscreen layout, so a session no terminal draws skips them.
     const terminal = await $.session.surfaces().then(s => s.includes('terminal'), () => true)
     if (terminal && !e.presentation.isFullscreen) return { text: 'filetree shows in the sidebar, which needs the fullscreen layout. Run /tui fullscreen, then /filetree.' }
-    if (terminal && e.presentation.columns < 110) return { text: 'filetree shows in the sidebar, which needs a terminal at least 110 columns wide. Widen it, then run /filetree.' }
-    noDock = false
+    if (terminal && e.presentation.columns < MIN_COLUMNS) return { text: `filetree shows in the sidebar, which needs a terminal at least ${MIN_COLUMNS} columns wide. Widen it, then run /filetree.` }
     const arg = (e.args ?? '').trim()
     const cwd = await cwdOf($)
+    const target = arg ? resolve(cwd, arg, home) : cwd
+    // A path is checked before anything opens: a missing one opens nothing, a file opens its folder.
+    let root = target
+    let file = ''
+    if (arg) {
+      let kind = ''
+      try {
+        kind = (await $.fs.stat(target)).kind
+      } catch (err) {
+        // Nothing there is the plain reply; any other stat error (a denied folder) says itself.
+        const cause = causeOf(err)
+        if (!isMissingCause(cause)) return { text: pathCheckReply('unreadable', shortPath(target), cause) }
+      }
+      if (kind === 'file') {
+        file = target
+        root = dirname(target)
+      } else if (kind !== 'dir') return { text: pathCheckReply('missing', shortPath(target)) }
+    }
+    noDock = false
     follow = !arg
-    const root = arg ? resolve(cwd, arg, home) : cwd
     await reset($, root, true)
+    if (file) {
+      await patch($, cur => (cur.root === root ? { cursor: file, scroll: null } : {}))
+      return { text: pathCheckReply('file', shortPath(file), shortPath(root)) }
+    }
     return { text: `File tree on ${shortPath(root)}${follow ? ' (follows the cwd)' : ''}.` }
   })
 
@@ -1153,12 +1426,19 @@ export const register: Register = (on, options) => {
     const since = await sinceNow($, shell && !quiet)
     const before = actions.some(a => a.verb === 'commit') ? await get($) : null
     const head = before?.top ? await headOf($, before.root) : ''
-    const pending: Pending | null = actions.length ? { actions, ids: await startGit($, actions), command, head } : null
+    // Paths the command names for deletion, and the rows they have now, so a deleted row can stay
+    // as a ghost once the command has run.
+    const removals = shell && !quiet ? removedTargets(command, cwd, home) : []
+    const removedNodes = removals.length ? (await get($)).nodes.filter(node => removals.includes(node.id)) : []
+    // tool.call carries the loop's agentId inside a subagent and none on the main loop. Only the
+    // git chip needs the answer before the tool runs, and it waits 300 ms at most for it.
+    const isChipSubagent = actions.length ? await isSubagentLoop($, e.agentId, 300) : false
+    const pending: Pending | null = actions.length ? { actions, ids: await startGit($, actions, isChipSubagent), command, head } : null
     let result: Awaited<ReturnType<typeof next>>
     try {
       result = await next(e)
     } catch (err) {
-      if (pending) await finishGit($, pending, failAll(pending))
+      if (pending) await finishGit($, pending, failAll(pending, causeOf(err)))
       if (since.mark) void $.process.run(['rm', '-f', since.mark], { timeoutMs: 3_000 }).catch(() => undefined)
       throw err
     }
@@ -1170,17 +1450,30 @@ export const register: Register = (on, options) => {
       if (since.mark) void $.process.run(['rm', '-f', since.mark], { timeoutMs: 3_000 }).catch(() => undefined)
       return result
     }
+    // Everything after the tool ran works the subagent flag out off the tool's path, waiting
+    // 300 ms at most for the agent list; a slower list counts as the main loop.
+    const subagentLookup = isSubagentLoop($, e.agentId, 300)
     if (shell) {
       const out: Partial<BuiltinToolResults['Bash']> = !result.isError && result.result && typeof result.result === 'object' ? (result.result as Partial<BuiltinToolResults['Bash']>) : {}
-      const reads = showReads ? readTargets(command, cwd, typeof out.stdout === 'string' ? out.stdout : '', home) : []
-      const job: Job = { actions: [], since, initRepo: actions.some(a => a.init), readOnly: quiet || result.isReadOnly === true }
-      if (out.backgroundTaskId) background.set(out.backgroundTaskId, { p: pending, job, reads })
-      else void (async () => {
-        const results = pending ? await outcomes($, pending, !result.isError, out.gitOperation) : []
+      const cause = result.isError ? bashFailureCause(result.text ?? (typeof result.result === 'string' ? result.result : '')) : ''
+      const reads: QueuedRead[] = showReads ? readTargets(command, cwd, typeof out.stdout === 'string' ? out.stdout : '', home).map(path => ({ path, isSubagent: false })) : []
+      const job: Job = { actions: [], since, initRepo: actions.some(a => a.init), readOnly: quiet || result.isReadOnly === true, isSubagent: false }
+      const removal: Removal | null = removals.length ? { paths: removals, nodes: removedNodes, isSubagent: false } : null
+      // A background command deletes when it ends, so its removals wait for its notification. Its
+      // entry is set before any wait, and the subagent flag is filled in once the lookup answers.
+      if (out.backgroundTaskId) background.set(out.backgroundTaskId, { p: pending, job, reads, removal })
+      void (async () => {
+        const isSubagent = await subagentLookup
+        job.isSubagent = isSubagent
+        for (const read of reads) read.isSubagent = isSubagent
+        if (removal) removal.isSubagent = isSubagent
+        if (out.backgroundTaskId) return
+        const results = pending ? await outcomes($, pending, !result.isError, out.gitOperation, cause) : []
         if (pending) await finishGit($, pending, results)
+        if (removal) await settleRemoval($, removal)
         queuedReads.push(...reads)
         scheduleScan($, { ...job, actions: proven(pending, results) })
-      })()
+      })().catch(err => logFailure($, 'the update after a Bash call', err))
       if (follow && /(^|[;&|\s])(cd|pushd|popd)(\s|$)/.test(command)) $.clock.after(400, () => void followCwd($))
     } else {
       const file =
@@ -1189,7 +1482,10 @@ export const register: Register = (on, options) => {
           : 'notebook_path' in e && typeof e.notebook_path === 'string'
             ? e.notebook_path
             : ''
-      if (file) void touched($, [file], 'orange', showWrites)
+      if (file)
+        void subagentLookup
+          .then(isSubagent => touched($, [file], 'write', showWrites, isSubagent))
+          .catch(err => logFailure($, `the update after writing ${file}`, err))
     }
     return result
   })
@@ -1197,7 +1493,10 @@ export const register: Register = (on, options) => {
   on('tool.call', { tool: 'Read' }, async ($, e, next) => {
     const result = await next(e)
     if (result.deny || result.isError || e.tool !== 'Read' || !showReads) return result
-    void touched($, [posix(e.file_path)], 'purple', true)
+    const path = posix(e.file_path)
+    void isSubagentLoop($, e.agentId, 300)
+      .then(isSubagent => touched($, [path], 'read', true, isSubagent))
+      .catch(err => logFailure($, `the update after reading ${path}`, err))
     return result
   })
 
@@ -1208,7 +1507,10 @@ export const register: Register = (on, options) => {
       const names = (result.result as Partial<BuiltinToolResults['Grep']> | undefined)?.filenames
       if (!Array.isArray(names) || names.length === 0) return result
       const cwd = await cwdOf($)
-      void touched($, names.slice(0, SEARCH_REVEAL_LIMIT).map(f => resolve(cwd, posix(f), home)), 'purple', true)
+      const paths = names.slice(0, SEARCH_REVEAL_LIMIT).map(f => resolve(cwd, posix(f), home))
+      void isSubagentLoop($, e.agentId, 300)
+        .then(isSubagent => touched($, paths, 'read', true, isSubagent))
+        .catch(err => logFailure($, `the update after a ${tool} search`, err))
       return result
     })
 
@@ -1226,9 +1528,11 @@ export const register: Register = (on, options) => {
     if (e.requestId !== PANE || e.element !== 'rows' || !e.data || typeof e.data !== 'object') return next(e)
     const data = e.data as { press?: unknown; key?: unknown; ctrl?: unknown; shift?: unknown; scrollTo?: unknown; copy?: unknown }
     void sync($)
+    const version = treeVersion
     const t = await get($)
     if (typeof data.copy === 'string') {
-      await copyPath($, data.copy, Boolean(data.shift), e.surface)
+      // A deleted file's ghost row copies the path it had.
+      await copyPath($, data.copy.startsWith(GHOST_PREFIX) ? data.copy.slice(GHOST_PREFIX.length) : data.copy, Boolean(data.shift), e.surface)
       return {}
     }
     if (typeof data.scrollTo === 'number') {
@@ -1252,7 +1556,12 @@ export const register: Register = (on, options) => {
       else if (data.key in by) await scrollPreview($, by[data.key] ?? 0)
       return {}
     }
-    const rows = visibleRows(t)
+    const rowKey = rowKeyAction(data.key, Boolean(data.ctrl))
+    if (rowKey) {
+      await runRowKey($, rowKey)
+      return {}
+    }
+    const rows = rowsOf(t, version, shownGhosts(t, await $.clock.now()))
     const at = rows.findIndex(r => r.node.id === t.cursor)
     const cur = rows[at]?.node
     const move = (d: number) => {
@@ -1360,6 +1669,17 @@ export const register: Register = (on, options) => {
       const { Box: Empty } = $.ui.resolve(e)
       return <Empty />
     }
+    // The start setting opened the pane: it keeps to the terminal width /filetree asks for.
+    const viewport = e.viewport
+    if (e.surface === 'terminal' && openedByStart && viewport && (viewport.isFullscreen === false || viewport.columns < MIN_COLUMNS)) {
+      openedByStart = false
+      noDock = true
+      void $.ui.close({ id: PANE }).catch(() => undefined)
+      $.ui.toast(startBlockedReason(viewport))
+      const { Box: Empty } = $.ui.resolve(e)
+      return <Empty />
+    }
+    if (e.surface === 'terminal' && viewport) openedByStart = false
     const isDesktop = e.surface === 'desktop'
     const unicode = glyphSetting === 'plain' || (glyphSetting === 'auto' && (noNerd || isDesktop))
     // The desktop draws Lucide icons unless the glyphs setting asks for the plain badges. A Client
@@ -1367,6 +1687,7 @@ export const register: Register = (on, options) => {
     const isLucide = isDesktop && glyphSetting !== 'plain'
     const { Box, Text, Button, Input, Client } = $.ui.resolve(e)
     const Svg = e.surface === 'desktop' ? $.ui.resolve(e).Svg : undefined
+    const version = treeVersion
     const t = await get($)
     const theme: Theme = (await $.state.get(THEME)).value ?? DEFAULT_THEME
     const palette: Palette = buildPalette(theme, isDesktop)
@@ -1419,13 +1740,26 @@ export const register: Register = (on, options) => {
     }
     const now = await $.clock.now()
     const live = (await activities($)).filter(a => now - a.at < (a.state === 'running' ? RUNNING_MAX_MS : ACTIVITY_TTL_MS))
-    const latest = [...live].reverse().find(a => a.state === 'running') ?? live[live.length - 1]
+    // Every running git action shows, up to three and a count of the rest; with none running,
+    // the one that ended last.
+    const running = live.filter(a => a.state === 'running')
+    const runningShown = runningChips(running)
+    const lastEnded = live[live.length - 1]
+    const footerChips = running.length ? runningShown.shown : lastEnded ? [lastEnded] : []
+    const hasFooter = Boolean(t.selected) || footerChips.length > 0
     const bright = new Set(t.flashOn ? t.flash : [])
     const dimmed = new Set(t.flashOn ? t.flashDim : [])
     const ignored = new Set(t.ignored)
     const untracked = new Set(t.untrackedDirs)
     const width = Math.max(24, e.props.bodyColumns)
-    const rows = visibleRows(t)
+    const ghostList = shownGhosts(t, now)
+    const ghostIds = new Set(ghostList.map(ghost => ghost.node.id))
+    const rows = rowsOf(t, version, ghostList)
+    // Files touched outside the folder: every one on the desktop, whose body scrolls; the
+    // terminal keeps five rows for them and counts the rest.
+    const outsideList = outsideOf(outsideTouches, t.root)
+    const outsideShown = isDesktop ? outsideList : outsideList.slice(0, 5)
+    const outsideRows = outsideList.length ? 1 + outsideShown.length + (outsideShown.length < outsideList.length ? 1 : 0) : 0
 
     // The controls. Labels say what a press does; all are drawn alike, so state is read from
     // the label. The desktop gives the search field a row of its own and puts the controls on
@@ -1437,15 +1771,16 @@ export const register: Register = (on, options) => {
     const say = (text: string) => (isDesktop ? text.charAt(0).toUpperCase() + text.slice(1) : text)
     const columnLabel = showAge ? 'ages' : 'dates'
     const sizeLabel = t.showSize ? `show ${columnLabel}` : 'show sizes'
-    const upButton = { id: 'up', label: say('go up'), dim: true, hint: 'parent folder' }
-    const reloadButton = { id: 'refresh', label: say('reload'), dim: true, hint: 'reload tree and git' }
+    // Each hint names the key the rows take for the same action.
+    const upButton = { id: 'up', label: say('go up'), dim: true, hint: 'parent folder (u)' }
+    const reloadButton = { id: 'refresh', label: say('reload'), dim: true, hint: 'reload tree and git (r)' }
     const viewButtons = [
-      { id: 'hidden', label: say(t.showHidden ? 'hide dotfiles' : 'show dotfiles'), dim: true, hint: t.showHidden ? 'hide hidden files' : 'show hidden files' },
-      { id: 'size', label: say(sizeLabel), dim: true, hint: sizeLabel },
-      { id: 'collapse', label: isDesktop ? 'Collapse all' : 'collapse', dim: true, hint: 'collapse all' },
+      { id: 'hidden', label: say(t.showHidden ? 'hide dotfiles' : 'show dotfiles'), dim: true, hint: t.showHidden ? 'hide hidden files (.)' : 'show hidden files (.)' },
+      { id: 'size', label: say(sizeLabel), dim: true, hint: `${sizeLabel} (s cycles date, age, size)` },
+      { id: 'collapse', label: isDesktop ? 'Collapse all' : 'collapse', dim: true, hint: 'collapse all (c)' },
       ...(follow ? [] : [{ id: 'cwd', label: say('follow cwd'), dim: true, hint: 'follow the cwd' }]),
     ]
-    const clearSelectionButton = { id: 'unselect', label: isDesktop ? 'Clear selection' : 'unselect', dim: true, hint: 'clear selection' }
+    const clearSelectionButton = { id: 'unselect', label: isDesktop ? 'Clear selection' : 'clear selection', dim: true, hint: 'stop sending the file with prompts' }
     const toolbarButtons = isDesktop ? viewButtons : [upButton, reloadButton, ...viewButtons]
     const allButtons = [upButton, reloadButton, ...viewButtons, ...(t.selected ? [clearSelectionButton] : [])]
     // How many rows the terminal's toolbar wraps to, filled greedily as the row lays out:
@@ -1464,7 +1799,9 @@ export const register: Register = (on, options) => {
       return lines
     })()
 
-    const fixed = 2 + toolbarRows + (t.top ? (t.branch ? 1 : 0) : showHints ? 1 : 0) + (t.selected || latest ? 1 : 0)
+    // The git line under the header: why git could not be read, else outside a repo the init hint.
+    const isGitHintShown = !t.top && showHints && !t.gitError
+    const fixed = 2 + toolbarRows + (t.top && t.branch ? 1 : 0) + (t.gitError || isGitHintShown ? 1 : 0) + (hasFooter ? 1 : 0) + outsideRows
     const room = nativeScroll ? Math.max(1, rows.length) : Math.max(5, (e.props.scroll?.bodyRows ?? 40) - fixed)
     const isLit = (id: string) => bright.has(id) || dimmed.has(id)
     const focus = followClaude && t.flashOn ? ([...t.flash].reverse().find(id => id !== BRANCH_ROW) ?? t.cursor) : t.cursor
@@ -1489,12 +1826,15 @@ export const register: Register = (on, options) => {
     const totals: [number, number] = t.top ? (t.diff[t.root] ?? [0, 0]) : [0, 0]
     const isBarShown = !nativeScroll && rows.length > shown.length + pinned.length
     const isNarrow = width < NARROW_COLUMNS
-    const countSegs = (counts: [number, number, number] | undefined): Seg[] => {
+    // Untracked files count as ?, staged-added ones as A, then modified and deleted.
+    const countSegs = (counts: readonly number[] | undefined): Seg[] => {
       if (!counts) return []
+      const [untracked = 0, modified = 0, deleted = 0, added = 0] = counts
       const out: Seg[] = []
-      if (counts[0] > 0) out.push({ t: ` ?${counts[0]}`, c: palette.added })
-      if (counts[1] > 0) out.push({ t: ` M${counts[1]}`, c: palette.modified })
-      if (counts[2] > 0) out.push({ t: ` D${counts[2]}`, c: palette.deleted })
+      if (untracked > 0) out.push({ t: ` ?${untracked}`, c: palette.added })
+      if (added > 0) out.push({ t: ` A${added}`, c: palette.added })
+      if (modified > 0) out.push({ t: ` M${modified}`, c: palette.modified })
+      if (deleted > 0) out.push({ t: ` D${deleted}`, c: palette.deleted })
       return out
     }
     const lineSegs = (loc: [number, number] | undefined): Seg[] => {
@@ -1536,7 +1876,7 @@ export const register: Register = (on, options) => {
       if (n.kind === 'dir') return isNarrow ? { detail: [], main: counts, mark, isDate: false } : { detail: counts, main: folderLines, mark, isDate: false }
       return loc ? { detail: [], main: lineSegs(loc), mark, isDate: false } : { detail: [], main: muted(timeText), mark, isDate: Boolean(timeText) }
     }
-    const drawnRows = [...pinned, ...shown]
+    const drawnRows = [...pinned, ...shown].filter(r => !ghostIds.has(r.node.id))
     const cells = new Map(drawnRows.map(r => [r.node.id, cellsOf(r)]))
     const segsWidth = (segs: Seg[]) => segs.reduce((sum, segment) => sum + widthOf(segment.t), 0)
     let mainWidth = 0
@@ -1565,12 +1905,14 @@ export const register: Register = (on, options) => {
 
     const rowSpec = (r: (typeof rows)[number]): RowSpec => {
       const n = r.node
-      const own = t.git[n.id]
+      // A file Claude deleted: faded and struck through, with no cells, until its time is up.
+      const isGhost = ghostIds.has(n.id)
+      const own = isGhost ? undefined : t.git[n.id]
       const status = own ?? (underAny(dirname(n.id), untracked, t.root) ? '?' : undefined)
       const isIgnored = !status && underAny(n.id, ignored, t.root)
       const statusInk = gitInk(palette, status)
-      const isBright = bright.has(n.id)
-      const isDim = !isBright && dimmed.has(n.id)
+      const isBright = !isGhost && bright.has(n.id)
+      const isDim = !isGhost && !isBright && dimmed.has(n.id)
       const isRowLit = isBright || isDim
       const tone = t.flashTones[n.id] ?? 'orange'
       // Files take their git colour; a folder keeps the text colour and says its changes in its cells.
@@ -1606,42 +1948,54 @@ export const register: Register = (on, options) => {
               { t: '│ '.repeat(r.depth - activeLevel - 1), c: palette.faint },
             ].filter(segment => segment.t)
           : [{ t: guides, c: palette.faint }]
-      const rowCells = cells.get(n.id) ?? cellsOf(r)
+      const rowCells: Cells = isGhost ? { detail: [], main: [], mark: { t: '  ' }, isDate: false } : (cells.get(n.id) ?? cellsOf(r))
       const roomBesides = width - 1 - widthOf(guides) - 2 - segsWidth(iconSegs) - widthOf(linkMark) - segsWidth(rowCells.detail) - fixedTrailing
       // A row whose name would be squeezed under ten columns gives up its date for the name.
       const isDateDropped = rowCells.isDate && roomBesides - mainWidth < MIN_NAME_ROOM
       const nameRoom = Math.max(4, roomBesides - (isDateDropped ? 0 : mainWidth))
       const name = truncateMiddle(n.name, nameRoom)
-      const recent = recentTouches.get(n.id)
-      const recentStep = recent ? recentLevel(recent.at, now) : 0
-      const gutter: Seg = isRowLit
-        ? { t: '▎', c: isDim ? mix(palette.ink(tone), palette.mutedHex, 0.5) : palette.ink(tone) }
-        : recent && recentStep > 0
-          ? { t: '▎', c: mix(palette.ink(recent.tone), palette.mutedHex, recentStep === 2 ? 0.25 : 0.65) }
-          : n.id === t.cursor
-            ? { t: '›', c: palette.accent }
+      const recent = isGhost ? undefined : recentTouches.get(n.id)
+      // The cursor marker always shows on its row; a shimmer or recent touch shows everywhere
+      // else, a thin bar for a read and a thick one for a write.
+      const mark = gutterMark({
+        isCursor: n.id === t.cursor,
+        lit: isRowLit ? { tone, isDim } : null,
+        recent: recent ? { tone: recent.tone, step: recentLevel(recent.at, now) } : null,
+      })
+      const touchMix = { bright: 0, dim: 0.5, soft: 0.25, faint: 0.65 } as const
+      const gutter: Seg =
+        mark.ink === 'accent'
+          ? { t: mark.glyph, c: palette.accent }
+          : mark.ink === 'touch'
+            ? { t: mark.glyph, c: mix(palette.ink(mark.tone), palette.mutedHex, touchMix[mark.strength]) }
             : { t: ' ' }
+      const nameSeg: Seg = isGhost
+        ? { t: name, c: palette.muted, s: true }
+        : isRowLit
+          ? { t: name, sh: tone, dim: isDim, b: isBright }
+          : { t: name, c: nameColor, b: n.id === t.selected, s: status === 'D' && n.kind !== 'dir' }
       const left: Seg[] = [
         gutter,
         ...guideSegs,
         { t: caret, c: palette.muted, role: n.kind === 'dir' ? 'caret' : undefined },
         ...iconSegs,
-        isRowLit ? { t: name, sh: tone, dim: isDim, b: isBright } : { t: name, c: nameColor, b: n.id === t.selected, s: status === 'D' && n.kind !== 'dir' },
+        nameSeg,
         ...(linkMark ? [{ t: linkMark, c: palette.muted }] : []),
       ]
+      const specId = isGhost ? `${GHOST_PREFIX}${n.id}` : n.id
       if (isLucide) {
         // A row Claude is on takes the first shade of the palette its name shimmers in.
         const shimmerPalette = isDim ? palette.shimmer[tone]?.dim : palette.shimmer[tone]?.bright
         const shimmerInk = shimmerPalette?.[0] ?? palette.ink(tone)
-        iconOverlays.set(n.id, {
+        iconOverlays.set(specId, {
           prefixCells: widthOf(gutter.t) + segsWidth(guideSegs) + widthOf(caret),
           name: lucideNameFor(n, r.open, isRepo),
-          color: isRowLit ? shimmerInk : fade(glyphInk),
+          color: isGhost ? palette.mutedHex : isRowLit ? shimmerInk : fade(glyphInk),
         })
       }
       const cellSegs: Seg[] = [...rowCells.detail, ...(mainWidth && !isDateDropped ? padTo(rowCells.main, mainWidth) : []), rowCells.mark]
       const right = isIgnored ? cellSegs.map(segment => (segment.c === undefined ? segment : { ...segment, c: palette.faint })) : cellSegs
-      return { id: n.id, left: clean(left), right: clean(right) }
+      return isGhost ? { id: specId, left: clean(left), right: clean(right), isFaded: true } : { id: specId, left: clean(left), right: clean(right) }
     }
 
     const note = (text: string): RowSpec => ({ id: '', left: [{ t: text, c: palette.muted }], right: [] })
@@ -1650,7 +2004,9 @@ export const register: Register = (on, options) => {
     const emptyText = query
       ? pendingQuery === t.query
         ? '  Searching…'
-        : `  No files match "${query}"`
+        : t.searchError
+          ? `  ${searchUnavailable(t.searchError)}`
+          : `  No files match "${query}"`
       : unreadable.has(t.root)
         ? '  Could not read this folder'
         : !listedRoots.has(t.root)
@@ -1671,7 +2027,7 @@ export const register: Register = (on, options) => {
         return overlay ? overlay.prefixCells + overlay.name.length : 0
       }
       let size = 0
-      const cut = specs.findIndex(r => (size += JSON.stringify(r).length + 1 + overlayText(r)) > ROWS_BUDGET)
+      const cut = specs.findIndex(r => (size += specCost(r) + 1 + overlayText(r)) > ROWS_BUDGET)
       if (cut >= 0) specs.splice(cut, specs.length - cut, note(`  … ${specs.length - cut} more rows, collapse folders or use search`))
     }
     // One overlay row per drawn row, so the icons stay in line; notes and the cut line get an empty one.
@@ -1683,11 +2039,12 @@ export const register: Register = (on, options) => {
     // What changed in the repo: file counts by kind and line totals, or clean. The desktop
     // shows it beside the title, where a hovered button's hint takes its place; a terminal
     // 40 columns or narrower drops the line totals first.
+    // Hovering the summary shows a card under it that spells out its letters.
     const summary = () => {
       if (!t.top) return null
       const isLinesShown = isDesktop || width > 40
       return (
-        <Box flexDirection="row" flexShrink={0}>
+        <Box key="summary" flexDirection="row" flexShrink={0}>
           {rootCounts.map(segment => (
             <Text mono color={segment.c}>{segment.t}</Text>
           ))}
@@ -1696,6 +2053,11 @@ export const register: Register = (on, options) => {
               <Text mono color={segment.c}>{segment.t}</Text>
             ))}
           {rootCounts.length === 0 && totals[0] === 0 && totals[1] === 0 && <Text mono color={palette.muted}> clean</Text>}
+          <Box position="absolute" top={1} right={0} display="none" hover={{ display: 'flex' }} backgroundColor={palette.cursorBg} paddingX={1}>
+            <Text mono color={palette.text}>
+              {countsLegend(t.counts[t.root])}
+            </Text>
+          </Box>
         </Box>
       )
     }
@@ -1732,20 +2094,62 @@ export const register: Register = (on, options) => {
       )
     }
 
+    // A failed chip says why after its label; a subagent's chip says "subagent" first, in lilac.
     const chip = (a: Activity) => {
       const isFailed = a.state === 'failed'
       const icon = unicode ? a.plain : a.nerd
       const hash = a.state === 'done' && a.kind === 'git commit' ? (a.detail.split(' ')[0] ?? '') : ''
+      const cause = isFailed ? a.detail : ''
       return (
-        <Box flexDirection="row" marginLeft={2} flexShrink={0}>
+        <Box key={`chip-${a.id}`} flexDirection="row" marginLeft={2} flexShrink={cause ? 1 : 0} overflow="hidden">
           <Text mono color={isFailed ? palette.deleted : palette.ink(a.tone)}>{icon + ' '}</Text>
+          {a.isSubagent ? <Text mono color={palette.ink('subagent write')}>subagent </Text> : null}
           <Text mono bold={a.state === 'running'} color={isFailed ? palette.deleted : palette.text}>
             {a.state === 'running' ? `${a.label}…` : a.label}
           </Text>
           {hash && <Text mono color={palette.muted}>{` ${hash}`}</Text>}
+          {cause ? (
+            <Box flexShrink={1} overflow="hidden">
+              <Text mono color={palette.muted} wrap="truncate-end">
+                {`: ${cause}`}
+              </Text>
+            </Box>
+          ) : null}
         </Box>
       )
     }
+    const moreChips = runningShown.more > 0 && running.length > 0 ? <Text mono color={palette.muted}>{`  +${runningShown.more} more`}</Text> : null
+
+    // Files Claude touched outside the folder, under the tree: newest first, a thin bar for a
+    // read and a thick one for a write; a subagent's are lilac, dashed and say so.
+    const outsideGroup =
+      outsideList.length === 0 ? null : (
+        <Box flexDirection="column">
+          <Box flexDirection="row" height={1}>
+            <Text mono bold color={palette.muted}>
+              Outside this folder
+            </Text>
+            <Box flexGrow={1} />
+            <Button key="clear-outside" plain dimColor label={isDesktop ? 'Clear list' : 'clear list'} onPress={() => clearOutside($)} />
+          </Box>
+          {outsideShown.map(touch => (
+            <Box flexDirection="row" height={1} overflow="hidden">
+              <Text mono color={palette.ink(touchTone(touch.kind, touch.isSubagent))}>{barFor(touch.kind, touch.isSubagent)}</Text>
+              <Text mono> </Text>
+              <Box flexShrink={1} overflow="hidden">
+                <Text mono color={palette.text} wrap="truncate-start">
+                  {homeRelative(touch.path, home)}
+                </Text>
+              </Box>
+              <Box flexGrow={1} />
+              <Text mono color={palette.muted}>{` ${touch.kind === 'read' ? 'read' : 'written'}${touch.isSubagent ? ' by a subagent' : ''}`}</Text>
+            </Box>
+          ))}
+          {outsideShown.length < outsideList.length ? (
+            <Text mono color={palette.muted}>{`  +${outsideList.length - outsideShown.length} more`}</Text>
+          ) : null}
+        </Box>
+      )
 
     // The terminal draws plain labels, so a quiet dot keeps two-word labels apart.
     const toolbar = (
@@ -1775,7 +2179,7 @@ export const register: Register = (on, options) => {
       <Input
         key="q"
         {...(isDesktop ? {} : { label: '/ ' })}
-        placeholder={isDesktop ? 'Search files' : 'search files'}
+        placeholder={isDesktop ? 'Search files (/ from the tree)' : 'search files'}
         submitLabel="jump"
         autoFocus
         value={t.query}
@@ -1783,7 +2187,7 @@ export const register: Register = (on, options) => {
         onSubmit={(v: string) => void jump($, v)}
       />
     )
-    const clearSearch = t.query ? <Button key="clear" plain dimColor label={isDesktop ? 'Clear search' : 'clear'} onPress={() => void search($, '')} /> : null
+    const clearSearch = t.query ? <Button key="clear" plain dimColor label={isDesktop ? 'Clear search' : 'clear search'} onPress={() => void search($, '')} /> : null
     const treeClient = (
       <Client
         key="rows"
@@ -1831,7 +2235,12 @@ export const register: Register = (on, options) => {
           {hint(allButtons, widthOf(header)) ?? (isDesktop ? summary() : null)}
         </Box>
         {branchRow()}
-        {!t.top && showHints && (
+        {t.gitError ? (
+          <Text mono dimColor color={palette.muted} wrap="truncate-end">
+            {gitIcon + gitUnavailable(t.gitError)}
+          </Text>
+        ) : null}
+        {isGitHintShown && (
           <Text mono color={palette.muted} wrap="truncate-end">
             {gitIcon}Git status starts after git init
           </Text>
@@ -1852,16 +2261,25 @@ export const register: Register = (on, options) => {
         )}
         {isDesktop ? desktopControls : null}
         {tree}
+        {outsideGroup}
         <Box flexGrow={1} />
-        {isDesktop && (t.selected || latest) && divider(width)}
-        {(t.selected || latest) && (
+        {isDesktop && hasFooter && divider(width)}
+        {hasFooter && (
           // On the desktop the activity wraps under the selection when both would be cramped.
           <Box flexDirection="row" {...(isDesktop ? { flexWrap: 'wrap' as const } : {})}>
             {t.selected ? (
-              <Box flexShrink={1} {...(isDesktop ? { minWidth: Math.min(24, Math.max(8, width - 18)) } : {})}>
-                <Text mono color={palette.muted} wrap="truncate-start">
-                  selected: {t.selected !== t.root && inside(t.root, t.selected) ? t.selected.slice(t.root.endsWith('/') ? t.root.length : t.root.length + 1) : shortPath(t.selected)}
-                </Text>
+              <Box flexDirection="row" flexShrink={1} {...(isDesktop ? { minWidth: Math.min(24, Math.max(8, width - 18)) } : {})}>
+                <Box flexShrink={1} overflow="hidden">
+                  <Text mono color={palette.muted} wrap="truncate-start">
+                    selected: {t.selected !== t.root && inside(t.root, t.selected) ? t.selected.slice(t.root.endsWith('/') ? t.root.length : t.root.length + 1) : shortPath(t.selected)}
+                  </Text>
+                </Box>
+                {/* The note gives way first, so the path keeps its room. */}
+                <Box flexShrink={100} overflow="hidden">
+                  <Text mono color={palette.muted} wrap="truncate-end">
+                    {SELECTED_SUFFIX}
+                  </Text>
+                </Box>
               </Box>
             ) : null}
             {t.selected ? (
@@ -1870,7 +2288,8 @@ export const register: Register = (on, options) => {
               </Box>
             ) : null}
             <Box flexGrow={1} />
-            {latest && chip(latest)}
+            {footerChips.map(chip)}
+            {moreChips}
           </Box>
         )}
       </Box>

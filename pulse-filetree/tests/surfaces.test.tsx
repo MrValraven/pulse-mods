@@ -3,6 +3,7 @@ import { expect, mock, test } from 'claude-code/testing'
 import { onInkFor } from '../hooks/icons'
 import { mix } from '../hooks/look'
 import { LINUX_LAUNCH } from '../hooks/open'
+import { drawnCost, type RowSpec, specCost } from '../hooks/rows'
 import { age, ancestorsOf, formatSize, replaceChildren, toNodes } from '../hooks/tree'
 
 type World = {
@@ -25,6 +26,7 @@ type World = {
   links?: string[]
   files?: Record<string, string>
   mtimes?: Record<string, number>
+  lsFilesExit?: [number, string]
 }
 type Ran = string[][]
 const opens: unknown[] = []
@@ -100,6 +102,7 @@ function world(on: any, w: World, ran: Ran) {
       if (verb === 'rev-parse') return w.top ? ok(`\n${w.top}\n`) : { value: { exitCode: 128, stdout: '', stderr: 'not a git repository', isStdoutTruncated: false, isStderrTruncated: false } }
       if (verb === 'status') return ok(w.status)
       if (verb === 'diff') return ok(w.numstat)
+      if (verb === 'ls-files' && w.lsFilesExit) return { value: { exitCode: w.lsFilesExit[0], stdout: '', stderr: w.lsFilesExit[1], isStdoutTruncated: false, isStderrTruncated: false } }
       if (verb === 'ls-files') {
         const files: string[] = []
         for (const [dir, kids] of Object.entries(w.dirs)) for (const [name, kind] of kids) if (kind === 'file' && dir.startsWith(w.top)) files.push(`${dir}/${name}`.slice(w.top.length + 1))
@@ -158,6 +161,7 @@ test('macOS Claude Code app: desktop pane draws, selects, opens with open', { ti
   await ui.post({ press: `${root}/README.md` }, { in: 'rows' })
   await clock.settle()
   expect(await texts(ui)).toContain('"selected: ","README.md"')
+  expect(await texts(ui)).toContain(', sent with your prompts')
   const sent = await $.prompt.submit({ text: 'what is this?', wait: false } as any)
   expect(JSON.stringify(sent)).toContain(`${root}/README.md`)
   await ui.post({ press: `${root}/README.md` }, { in: 'rows' })
@@ -287,16 +291,16 @@ test('hovering a header button says what it does beside the title where it fits,
     expect(await texts(ui)).not.toContain('reload tree and git')
     await ui.pointer({ type: 'enter', x: 0, y: 0, in: 'button-refresh' })
     await clock.settle()
-    expect(await texts(ui)).toContain('"reload tree and git "')
+    expect(await texts(ui)).toContain('"reload tree and git (r) "')
     await ui.pointer({ type: 'leave', x: 0, y: 0, in: 'button-refresh' })
     await clock.settle()
     expect(await texts(ui)).not.toContain('reload tree and git')
     await ui.pointer({ type: 'enter', x: 0, y: 0, in: 'button-hidden' })
     await clock.settle()
-    expect(await texts(ui)).toContain('"hide hidden files "')
+    expect(await texts(ui)).toContain('"hide hidden files (.) "')
     await ui.press({ key: 'hidden' })
     await clock.settle()
-    expect(await texts(ui)).toContain('"show hidden files "')
+    expect(await texts(ui)).toContain('"show hidden files (.) "')
     await ui.press({ key: 'hidden' })
     await ui.pointer({ type: 'leave', x: 0, y: 0, in: 'button-hidden' })
     await clock.settle()
@@ -799,13 +803,13 @@ test('a listing error keeps the cached rows and says so', { timeoutMs: 20_000 },
 })
 
 test('replacing many folders in one batch keeps unchanged nodes and drops what vanished', async () => {
-  const dir = (id: string, loaded: boolean) => ({ id, parent: id.slice(0, id.lastIndexOf('/')) || '/', name: id.slice(id.lastIndexOf('/') + 1), kind: 'dir' as const, hidden: false, mtime: 0, loaded })
+  const dir = (id: string, loaded: boolean) => ({ id, parent: id.slice(0, id.lastIndexOf('/')) || '/', name: id.slice(id.lastIndexOf('/') + 1), kind: 'dir' as const, hidden: false, mtime: 0, size: 0, loaded })
   const file = (id: string) => ({ ...dir(id, false), kind: 'file' as const })
   const nodes = [dir('/r/a', true), dir('/r/b', true), file('/r/a/x'), dir('/r/b/y', true), file('/r/b/y/z')]
   const out = replaceChildren(nodes, new Map([
-    ['/r/a', toNodes('/r/a', [{ name: 'w', kind: 'file', mtimeMs: 0, isLink: false }])],
+    ['/r/a', toNodes('/r/a', [{ name: 'w', kind: 'file', mtimeMs: 0, size: 0, isLink: false }])],
     ['/r/b', []],
-    ['/r/b/y', toNodes('/r/b/y', [{ name: 'z', kind: 'file', mtimeMs: 0, isLink: false }])],
+    ['/r/b/y', toNodes('/r/b/y', [{ name: 'z', kind: 'file', mtimeMs: 0, size: 0, isLink: false }])],
   ]))
   expect(out.map(n => n.id).sort()).toEqual(['/r/a', '/r/a/w', '/r/b'])
   expect(out.find(n => n.id === '/r/b')?.loaded).toBe(true)
@@ -888,6 +892,8 @@ test('a background git push stays running until its task notification arrives', 
   await $.prompt.submit({ text: '<task-notification>\n<task-id>b2</task-id>\n<status>failed</status>\n<summary>Background command "git pull" failed with exit code 1</summary>\n</task-notification>', wait: false } as any)
   await clock.settle()
   expect(await texts(ui)).toContain('pull failed')
+  // The failed chip names the exit code from the task notification.
+  expect(await texts(ui)).toContain(': exit 1')
   await ui.unmount()
 })
 
@@ -1392,4 +1398,335 @@ test('files a Grep or Glob search returns shimmer as reads, relative names resol
   await clock.settle()
   expect(await texts(ui)).toContain(shimmer('a.ts', 'purple'))
   await ui.unmount()
+})
+
+test('/filetree checks its path: a missing one opens nothing, a file opens its folder with the cursor on it', { timeoutMs: 20_000 }, async ($, on) => {
+  const ran: Ran = []
+  const root = '/home/k/proj'
+  const clock = world(on, { os: 'linux', env: { HOME: '/home/k' }, cwd: '/home/k', top: '', dirs: { [root]: [['a.ts', 'file'], ['b.ts', 'file']] }, status: '', numstat: '' }, ran)
+  await $.session.start({ cwd: '/home/k', surface: 'terminal', isInteractive: true })
+  await clock.settle()
+  const before = opens.length
+  const missing = await $.command.run(fullscreen('nope'))
+  expect(JSON.stringify(missing)).toContain('No folder at ~/nope')
+  expect(opens.length).toBe(before)
+  const file = await $.command.run(fullscreen(`${root}/b.ts`))
+  await clock.settle()
+  expect(JSON.stringify(file)).toContain('~/proj/b.ts is a file, so the tree opens its folder ~/proj.')
+  const ui = await $.ui.mount({ plugin: 'pulse-filetree', surface: 'terminal', component: 'Pane', requestId: 'filetree', props: paneProps(60) })
+  await clock.settle()
+  expect(treeClientOf(await ui.drawn()).props.props.active).toBe(`${root}/b.ts`)
+  await ui.unmount()
+})
+
+test('errors name their cause: the clipboard reason, a git chip exit code and stderr line', { timeoutMs: 20_000 }, async ($, on) => {
+  const ran: Ran = []
+  const root = '/home/k/proj'
+  const w: World = { os: 'linux', env: { HOME: '/home/k' }, cwd: root, top: root, dirs: { [root]: [['a.txt', 'file']] }, status: '## main\0', numstat: '' }
+  w.tool = e => (e.command === 'git push' ? { isError: true, text: 'Exit code 128\nfatal: could not read Username for https://github.com' } : undefined)
+  const clock = world(on, w, ran)
+  on('ui.copy', () => ({ value: { isCopied: false, reason: 'no-clipboard' } }))
+  await $.session.start({ cwd: root, surface: 'terminal', isInteractive: true })
+  await clock.settle()
+  const ui = await $.ui.mount({ plugin: 'pulse-filetree', surface: 'terminal', component: 'Pane', requestId: 'filetree', props: paneProps(60) })
+  await ui.post({ copy: `${root}/a.txt` }, { in: 'rows' })
+  await clock.settle()
+  expect(ran.some(a => a[0] === 'toast' && a[1] === 'File tree: could not copy the path: no clipboard tool took the text')).toBe(true)
+  await $.tool.call({ tool: 'Bash', command: 'git push' } as any)
+  await clock.settle()
+  const shown = await texts(ui)
+  expect(shown).toContain('push failed')
+  expect(shown).toContain(': exit 128, fatal: could not read Username')
+  await ui.unmount()
+})
+
+test('a git read that fails says why under the header, and a search list that fails says why in the tree', { timeoutMs: 20_000 }, async ($, on) => {
+  const ran: Ran = []
+  const root = '/home/k/proj'
+  const w: World = {
+    os: 'linux', env: { HOME: '/home/k' }, cwd: root, top: root, dirs: { [root]: [['a.txt', 'file']] }, status: '## main\0', numstat: '',
+    exits: { git: [128, 'fatal: detected dubious ownership in repository at /home/k/proj\n'] },
+  }
+  const clock = world(on, w, ran)
+  await $.session.start({ cwd: root, surface: 'terminal', isInteractive: true })
+  await clock.settle()
+  const ui = await $.ui.mount({ plugin: 'pulse-filetree', surface: 'terminal', component: 'Pane', requestId: 'filetree', props: paneProps(80) })
+  await clock.settle()
+  let shown = await texts(ui)
+  expect(shown).toContain('git status unavailable: git rev-parse exit 128, fatal: detected dubious ownership')
+  expect(shown).not.toContain('Git status starts after git init')
+  w.exits = undefined
+  w.lsFilesExit = [129, 'fatal: index file corrupt\n']
+  await ui.press({ key: 'refresh' })
+  await clock.settle()
+  shown = await texts(ui)
+  expect(shown).not.toContain('git status unavailable')
+  await ui.input({ key: 'q', text: 'zzz', kind: 'change' })
+  await clock.settle()
+  shown = await texts(ui)
+  expect(shown).toContain('Search unavailable: git ls-files exit 129, fatal: index file corrupt')
+  expect(shown).not.toContain('No files match')
+  await ui.unmount()
+})
+
+test('reads and writes outside the folder list under the tree, newest first, until Clear list', { timeoutMs: 20_000 }, async ($, on) => {
+  const ran: Ran = []
+  const root = '/home/k/proj'
+  const clock = world(on, { os: 'linux', env: { HOME: '/home/k' }, cwd: root, top: '', dirs: { [root]: [['a.txt', 'file']] }, status: '', numstat: '' }, ran)
+  await $.session.start({ cwd: root, surface: 'desktop', isInteractive: true })
+  await clock.settle()
+  const ui = await $.ui.mount({ plugin: 'pulse-filetree', surface: 'desktop', component: 'Pane', requestId: 'filetree', props: paneProps(60) })
+  await $.tool.call({ tool: 'Read', file_path: '/home/k/notes/todo.md' } as any)
+  await clock.advance(1_000)
+  await $.tool.call({ tool: 'Edit', file_path: '/etc/hosts', old_string: 'a', new_string: 'b' } as any)
+  await clock.settle()
+  const shown = await texts(ui)
+  expect(shown).toContain('Outside this folder')
+  expect(shown).toContain('~/notes/todo.md')
+  expect(shown.indexOf('/etc/hosts')).toBeLessThan(shown.indexOf('~/notes/todo.md'))
+  expect(shown).toContain(' written')
+  await ui.press({ key: 'clear-outside' })
+  await clock.settle()
+  expect(await texts(ui)).not.toContain('Outside this folder')
+  await ui.unmount()
+})
+
+test("a subagent's writes shimmer lilac with a dashed bar, its git chip says subagent, and an unlisted fork counts as the main loop", { timeoutMs: 20_000 }, async ($, on) => {
+  const ran: Ran = []
+  const root = '/home/k/proj'
+  const w: World = {
+    os: 'linux', env: { HOME: '/home/k' }, cwd: root, top: root, dirs: { [root]: [['a.ts', 'file']] }, status: '## main\0', numstat: '',
+    tool: e => (e.command === 'git push' ? { result: { stdout: '', stderr: '', interrupted: false, backgroundTaskId: 'b1' } } : undefined),
+  }
+  const clock = world(on, w, ran)
+  // agent-1 is a listed subagent; fork-1 stands for an engine fork, which carries an id no list names.
+  on('agent.list', () => ({ value: [{ id: 'agent-1', description: 'edit a.ts', type: 'general-purpose', status: 'running' }] }))
+  await $.session.start({ cwd: root, surface: 'terminal', isInteractive: true })
+  await clock.settle()
+  const ui = await $.ui.mount({ plugin: 'pulse-filetree', surface: 'terminal', component: 'Pane', requestId: 'filetree', props: paneProps(60) })
+  await $.tool.call({ tool: 'Edit', file_path: `${root}/a.ts`, old_string: 'a', new_string: 'b', agentId: 'agent-1' } as any)
+  await clock.settle()
+  expect(await texts(ui)).toContain(shimmer('a.ts', 'subagent write'))
+  expect(await texts(ui)).toContain('"t":"┇"')
+  await clock.advance(3_000)
+  await $.tool.call({ tool: 'Edit', file_path: `${root}/a.ts`, old_string: 'b', new_string: 'c', agentId: 'fork-1' } as any)
+  await clock.settle()
+  expect(await texts(ui)).toContain(shimmer('a.ts', 'orange'))
+  await $.tool.call({ tool: 'Bash', command: 'git push', run_in_background: true, agentId: 'agent-1' } as any)
+  await clock.settle()
+  const shown = await texts(ui)
+  expect(shown).toContain('subagent ')
+  expect(shown).toContain('pushing…')
+  await ui.unmount()
+})
+
+test('a file Claude deletes stays 90 seconds as a faded, struck-through row', { timeoutMs: 20_000 }, async ($, on) => {
+  const ran: Ran = []
+  const root = '/home/k/proj'
+  const w: World = { os: 'linux', env: { HOME: '/home/k' }, cwd: root, top: '', dirs: { [root]: [['a.txt', 'file'], ['b.txt', 'file']] }, status: '', numstat: '' }
+  const clock = world(on, w, ran)
+  await $.session.start({ cwd: root, surface: 'terminal', isInteractive: true })
+  await clock.settle()
+  const ui = await $.ui.mount({ plugin: 'pulse-filetree', surface: 'terminal', component: 'Pane', requestId: 'filetree', props: paneProps(60) })
+  await clock.settle()
+  w.dirs[root] = [['b.txt', 'file']]
+  await $.tool.call({ tool: 'Bash', command: 'rm a.txt' } as any)
+  await clock.settle()
+  const rows = treeClientOf(await ui.drawn()).props.props.rows
+  const ghost = rows.find((row: any) => row.id === `deleted:${root}/a.txt`)
+  expect(ghost?.isFaded).toBe(true)
+  expect(JSON.stringify(ghost)).toContain('"t":"a.txt","c"')
+  expect(JSON.stringify(ghost)).toContain('"s":true')
+  await clock.advance(91_000)
+  expect(await texts(ui)).not.toContain(`deleted:${root}/a.txt`)
+  await ui.unmount()
+})
+
+test('row keys: . toggles dotfiles, s cycles the column, c collapses', { timeoutMs: 20_000 }, async ($, on) => {
+  const ran: Ran = []
+  const root = '/home/k/proj'
+  const clock = world(on, { os: 'linux', env: { HOME: '/home/k' }, cwd: root, top: '', dirs: { [root]: [['.env', 'file'], ['src', 'dir']], [`${root}/src`]: [['a.ts', 'file']] }, status: '', numstat: '' }, ran)
+  await $.session.start({ cwd: root, surface: 'terminal', isInteractive: true })
+  await clock.settle()
+  const ui = await $.ui.mount({ plugin: 'pulse-filetree', surface: 'terminal', component: 'Pane', requestId: 'filetree', props: paneProps(60) })
+  await clock.settle()
+  expect(await texts(ui)).toContain('.env')
+  await ui.post({ key: '.' }, { in: 'rows' })
+  await clock.settle()
+  expect(await texts(ui)).not.toContain('"id":"/home/k/proj/.env"')
+  await ui.post({ key: 's' }, { in: 'rows' })
+  await ui.post({ key: 's' }, { in: 'rows' })
+  await clock.settle()
+  expect(await texts(ui)).toContain('show ages')
+  await ui.post({ press: `${root}/src` }, { in: 'rows' })
+  await clock.settle()
+  expect(await texts(ui)).toContain(`"id":"${root}/src/a.ts"`)
+  await ui.post({ key: 'c' }, { in: 'rows' })
+  await clock.settle()
+  expect(await texts(ui)).not.toContain(`"id":"${root}/src/a.ts"`)
+  await ui.unmount()
+})
+
+test('staged-added files count as A in the folder counts, and the summary spells the letters out', { timeoutMs: 20_000 }, async ($, on) => {
+  const ran: Ran = []
+  const root = '/Users/k/proj'
+  const clock = world(on, {
+    os: 'darwin', env: { HOME: '/Users/k' }, cwd: root, top: root,
+    dirs: { [root]: [['src', 'dir'], ['notes.md', 'file']], [`${root}/src`]: [['new.ts', 'file']] },
+    status: '## main\0A  src/new.ts\0?? notes.md\0', numstat: '',
+  }, ran)
+  await $.session.start({ cwd: root, surface: 'desktop', isInteractive: true })
+  await clock.settle()
+  const ui = await $.ui.mount({ plugin: 'pulse-filetree', surface: 'desktop', component: 'Pane', requestId: 'filetree', props: paneProps(80) })
+  await clock.settle()
+  const shown = await texts(ui)
+  expect(shown).toContain('" A1"')
+  expect(shown).toContain('?1 untracked, A1 staged as added')
+  await ui.unmount()
+})
+
+test('every running git action shows in the footer, three and then a count', { timeoutMs: 20_000 }, async ($, on) => {
+  const ran: Ran = []
+  const root = '/home/k/proj'
+  let task = 0
+  const w: World = {
+    os: 'linux', env: { HOME: '/home/k' }, cwd: root, top: root, dirs: { [root]: [['a.txt', 'file']] }, status: '## main\0', numstat: '',
+    tool: () => ({ result: { stdout: '', stderr: '', interrupted: false, backgroundTaskId: `b${++task}` } }),
+  }
+  const clock = world(on, w, ran)
+  await $.session.start({ cwd: root, surface: 'terminal', isInteractive: true })
+  await clock.settle()
+  const ui = await $.ui.mount({ plugin: 'pulse-filetree', surface: 'terminal', component: 'Pane', requestId: 'filetree', props: paneProps(100) })
+  for (const command of ['git push', 'git pull', 'git fetch', 'git merge topic']) await $.tool.call({ tool: 'Bash', command, run_in_background: true } as any)
+  await clock.settle()
+  const shown = await texts(ui)
+  for (const label of ['pushing…', 'pulling…', 'fetching…']) expect(shown).toContain(label)
+  expect(shown).toContain('+1 more')
+  await ui.unmount()
+})
+
+test('start on: a terminal under 110 columns keeps the pane closed and says why', { timeoutMs: 20_000 }, async ($, on) => {
+  const ran: Ran = []
+  const root = '/home/k/proj'
+  const clock = world(on, { os: 'linux', env: { HOME: '/home/k' }, cwd: root, top: '', dirs: { [root]: [['a.txt', 'file']] }, status: '', numstat: '' }, ran)
+  const closed: unknown[] = []
+  on('ui.close', (_$: any, e: any) => {
+    closed.push(e)
+    return { value: undefined }
+  })
+  await $.session.start({ cwd: root, surface: 'terminal', isInteractive: true })
+  await clock.settle()
+  const ui = await $.ui.mount({ plugin: 'pulse-filetree', surface: 'terminal', component: 'Pane', requestId: 'filetree', props: paneProps(40), viewport: { columns: 80, rows: 40, isFullscreen: true } } as any)
+  await clock.settle()
+  expect(closed.length).toBeGreaterThan(0)
+  expect(ran.some(a => a[0] === 'toast' && (a[1] ?? '').includes('80 columns wide and the sidebar needs 110'))).toBe(true)
+  await ui.unmount()
+})
+
+test('a deleted file that comes back drops its ghost and takes clicks again', { timeoutMs: 20_000 }, async ($, on) => {
+  const ran: Ran = []
+  const root = '/home/k/proj'
+  const w: World = { os: 'linux', env: { HOME: '/home/k' }, cwd: root, top: '', dirs: { [root]: [['a.txt', 'file'], ['b.txt', 'file']] }, status: '', numstat: '' }
+  const clock = world(on, w, ran)
+  await $.session.start({ cwd: root, surface: 'terminal', isInteractive: true })
+  await clock.settle()
+  const ui = await $.ui.mount({ plugin: 'pulse-filetree', surface: 'terminal', component: 'Pane', requestId: 'filetree', props: paneProps(60) })
+  await clock.settle()
+  w.dirs[root] = [['b.txt', 'file']]
+  await $.tool.call({ tool: 'Bash', command: 'rm a.txt' } as any)
+  await clock.settle()
+  expect(await texts(ui)).toContain(`deleted:${root}/a.txt`)
+  w.dirs[root] = [['a.txt', 'file'], ['b.txt', 'file']]
+  await $.tool.call({ tool: 'Write', file_path: `${root}/a.txt`, content: 'back' } as any)
+  await clock.settle()
+  const shown = await texts(ui)
+  expect(shown).toContain(`"id":"${root}/a.txt"`)
+  expect(shown).not.toContain(`deleted:${root}/a.txt`)
+  await ui.post({ press: `${root}/a.txt` }, { in: 'rows' })
+  await clock.settle()
+  expect(treeClientOf(await ui.drawn()).props.props.active).toBe(`${root}/a.txt`)
+  await ui.unmount()
+})
+
+test('git rm --cached keeps the file and its row', { timeoutMs: 20_000 }, async ($, on) => {
+  const ran: Ran = []
+  const root = '/home/k/proj'
+  const w: World = { os: 'linux', env: { HOME: '/home/k' }, cwd: root, top: root, dirs: { [root]: [['.env', 'file'], ['a.txt', 'file']] }, status: '## main\0', numstat: '' }
+  const clock = world(on, w, ran)
+  await $.session.start({ cwd: root, surface: 'terminal', isInteractive: true })
+  await clock.settle()
+  const ui = await $.ui.mount({ plugin: 'pulse-filetree', surface: 'terminal', component: 'Pane', requestId: 'filetree', props: paneProps(60) })
+  await clock.settle()
+  w.status = '## main\0D  .env\0!! .env\0'
+  await $.tool.call({ tool: 'Bash', command: 'git rm --cached .env' } as any)
+  await clock.settle()
+  const shown = await texts(ui)
+  expect(shown).toContain(`"id":"${root}/.env"`)
+  expect(shown).not.toContain('deleted:')
+  await ui.unmount()
+})
+
+test('the drawn-cost estimate stays at or a little above what each row serializes to', { timeoutMs: 20_000 }, async ($, on) => {
+  const ran: Ran = []
+  const root = '/Users/k/proj'
+  const clock = world(on, {
+    os: 'darwin', env: { HOME: '/Users/k' }, cwd: root, top: root,
+    dirs: { [root]: [['src', 'dir'], ['README.md', 'file'], ['notes.md', 'file']], [`${root}/src`]: [['a.ts', 'file']] },
+    status: '## main...origin/main\0 M src/a.ts\0?? notes.md\0', numstat: '3\t1\tsrc/a.ts\0',
+  }, ran)
+  await $.session.start({ cwd: root, surface: 'terminal', isInteractive: true })
+  await clock.settle()
+  const ui = await $.ui.mount({ plugin: 'pulse-filetree', surface: 'terminal', component: 'Pane', requestId: 'filetree', props: paneProps(60) })
+  // A first drawing snaps, so every row is drawn as itself with no motion frame in between.
+  await clock.settle()
+  const specs = treeClientOf(await ui.drawn()).props.props.rows as RowSpec[]
+  const rowElements = ((await ui.drawn({ in: 'rows' })) as any).children as unknown[]
+  expect(rowElements.length).toBe(specs.length)
+  specs.forEach((spec, index) => {
+    const ratio = drawnCost(spec, false) / JSON.stringify(rowElements[index]).length
+    expect(ratio).toBeGreaterThanOrEqual(1)
+    expect(ratio).toBeLessThanOrEqual(1.3)
+    expect(specCost(spec)).toBe(JSON.stringify(spec).length)
+  })
+  await ui.unmount()
+})
+
+test('a drawing between the rm and the scan keeps the ghost, which shows once the scan drops the row', { timeoutMs: 20_000 }, async ($, on) => {
+  const ran: Ran = []
+  const root = '/home/k/proj'
+  const w: World = { os: 'linux', env: { HOME: '/home/k' }, cwd: root, top: '', dirs: { [root]: [['a.txt', 'file'], ['b.txt', 'file']] }, status: '', numstat: '' }
+  const clock = world(on, w, ran)
+  await $.session.start({ cwd: root, surface: 'terminal', isInteractive: true })
+  await clock.settle()
+  const ui = await $.ui.mount({ plugin: 'pulse-filetree', surface: 'terminal', component: 'Pane', requestId: 'filetree', props: paneProps(60) })
+  await clock.settle()
+  // The scan's listing of the folder waits 5 seconds, so the tree still lists a.txt meanwhile.
+  w.dirs[root] = [['b.txt', 'file']]
+  w.delays = { [root]: [5_000] }
+  await $.tool.call({ tool: 'Bash', command: 'rm a.txt' } as any)
+  await clock.advance(1_000)
+  const during = await texts(ui)
+  expect(during).toContain(`"id":"${root}/a.txt"`)
+  expect(during).not.toContain(`deleted:${root}/a.txt`)
+  await clock.advance(5_000)
+  await clock.settle()
+  const after = await texts(ui)
+  expect(after).toContain(`"id":"deleted:${root}/a.txt"`)
+  expect(after).not.toContain(`"id":"${root}/a.txt"`)
+  await ui.unmount()
+})
+
+test('/filetree help answers in any layout and opens nothing', { timeoutMs: 20_000 }, async ($, on) => {
+  const ran: Ran = []
+  const root = '/home/k/proj'
+  const clock = world(on, { os: 'linux', env: { HOME: '/home/k' }, cwd: root, top: '', dirs: { [root]: [['a.txt', 'file']] }, status: '', numstat: '' }, ran)
+  await $.session.start({ cwd: root, surface: 'terminal', isInteractive: true })
+  await clock.settle()
+  const before = opens.length
+  const reply = await $.command.run({ command: 'filetree', args: 'help', origin: { kind: 'person' }, presentation: { isFullscreen: false, columns: 80 } } as any)
+  const text = JSON.stringify(reply)
+  expect(text).toContain('Settings (/config, pulse-filetree):')
+  expect(text).toContain('Claude activity (activity)')
+  expect(text).toContain('u or Backspace')
+  expect(opens.length).toBe(before)
 })

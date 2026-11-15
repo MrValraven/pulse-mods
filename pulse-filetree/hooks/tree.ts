@@ -34,6 +34,8 @@ export function emptyTree(root: string): FileTree {
     prefix: '',
     branch: null,
     counts: {},
+    gitError: '',
+    searchError: '',
     flash: [],
     flashDim: [],
     flashOn: false,
@@ -108,7 +110,12 @@ export function toNodes(dir: string, list: Entry[]): FileNode[] {
       size: e.size,
       loaded: false,
     }))
-    .sort((a, b) => (a.kind === 'dir' ? 0 : 1) - (b.kind === 'dir' ? 0 : 1) || collator.compare(a.name, b.name))
+    .sort(compareNodes)
+}
+
+// Folders first, then names in natural order: the order a listing shows its entries in.
+export function compareNodes(first: Pick<FileNode, 'kind' | 'name'>, second: Pick<FileNode, 'kind' | 'name'>): number {
+  return (first.kind === 'dir' ? 0 : 1) - (second.kind === 'dir' ? 0 : 1) || collator.compare(first.name, second.name)
 }
 
 export function replaceChildren(nodes: FileNode[], listed: Map<string, FileNode[]>): FileNode[] {
@@ -143,7 +150,8 @@ export type GitStatus = {
   files: Record<string, Change>
 }
 
-export type Change = 'new' | 'mod' | 'del'
+// new: untracked, add: staged as added, mod: modified, del: deleted.
+export type Change = 'new' | 'add' | 'mod' | 'del'
 
 export function parseBranch(record: string): Branch {
   const body = record.replace(/^## /, '')
@@ -184,7 +192,7 @@ export function parseGit(stdout: string, root: string, prefix: string): GitStatu
       continue
     }
     if (xy === '??' && raw.endsWith('/')) untrackedDirs.push(path)
-    else files[path] = xy === '??' || (xy.includes('A') && !xy.includes('D')) ? 'new' : xy.includes('D') && !/U/.test(xy) ? 'del' : 'mod'
+    else files[path] = xy === '??' ? 'new' : xy.includes('A') && !xy.includes('D') ? 'add' : xy.includes('D') && !/U/.test(xy) ? 'del' : 'mod'
     const letter =
       xy === '??'
         ? '?'
@@ -240,13 +248,14 @@ export function rollUp(diff: Record<string, [number, number]>, root: string): Re
   return out
 }
 
-export function rollCounts(files: Record<string, Change>, root: string): Record<string, [number, number, number]> {
-  const out: Record<string, [number, number, number]> = {}
-  const slot = { new: 0, mod: 1, del: 2 } as const
+// Per folder: untracked, modified, deleted and staged-added files, in that order.
+export function rollCounts(files: Record<string, Change>, root: string): Record<string, [number, number, number, number]> {
+  const out: Record<string, [number, number, number, number]> = {}
+  const slot = { new: 0, mod: 1, del: 2, add: 3 } as const
   for (const [path, change] of Object.entries(files)) {
     let dir = dirname(path)
     while (dir.length >= root.length && dir !== '/') {
-      const cur = out[dir] ?? [0, 0, 0]
+      const cur = out[dir] ?? [0, 0, 0, 0]
       cur[slot[change]] += 1
       out[dir] = cur
       if (dir === root) break
@@ -309,13 +318,6 @@ export function visibleRows(t: FileTree): Row[] {
   }
   walk(t.root, 0)
   return rows
-}
-
-export function stamp(ms: number): string {
-  if (!ms) return ''
-  const d = new Date(ms)
-  const p = (v: number) => String(v).padStart(2, '0')
-  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`
 }
 
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']

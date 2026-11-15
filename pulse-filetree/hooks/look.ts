@@ -19,8 +19,9 @@ const INKS: Record<Mode, Record<Hue, string>> = {
 
 const MUTED: Record<Mode, string> = { light: '#6e6478', both: '#7a7183', dark: '#a89cb4' }
 
-// Claude's activity tones (git.ts TONES names) mapped onto the house hues.
-const TONE_HUE: Record<string, Hue> = { orange: 'coral', green: 'jade', teal: 'teal', blue: 'blue', purple: 'lilac', cyan: 'cyan', red: 'red' }
+// Claude's activity tones (the tone names git.ts and marks.ts use) mapped onto the house hues.
+// A subagent's reads and writes both take lilac.
+const TONE_HUE: Record<string, Hue> = { orange: 'coral', green: 'jade', teal: 'teal', blue: 'blue', purple: 'lilac', cyan: 'cyan', red: 'red', 'subagent read': 'lilac', 'subagent write': 'lilac' }
 
 export type Palette = {
   isCustomTheme: boolean
