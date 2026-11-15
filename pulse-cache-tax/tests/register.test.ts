@@ -1,8 +1,10 @@
 import { describe, expect, mock, test, tier } from 'claude-code/testing'
+import type { Engine, MockClock } from 'claude-code/testing'
 import type { CommandRunInput, ConfigSetInput, ModelForkResult, On, PromptSubmitInput, RenderPropsOf, SessionStartInput, TurnCompleteInput, TurnUsage } from 'claude-code'
 
+import { bandColors } from '../hooks/draw'
 import { statusIcons } from '../hooks/status-icons'
-import { fmtDuration, freshState, parseDuration, resetForClear, seedFromResume } from '../hooks/register'
+import { cacheTaxHelp, DEFAULT_SETTINGS, fmtDuration, freshState, heldBlocker, keepwarmHelp, noteTurnRequest, parseDuration, pingAfterMsOf, pingCostPerHour, readSettings, resetForClear, savingsText, seedFromResume, ttlMsOf } from '../hooks/register'
 
 tier('user')
 
@@ -34,7 +36,7 @@ type ForkAnswer = null | 'throw' | ModelForkResult | { read: number; write: numb
 
 // The world beneath the mod: its store, the engine's answers, and a fork that
 // replies from a script so each test decides what the cache looked like.
-function world(on: On, forkAnswers: ForkAnswer[], opts: { store?: Map<string, unknown>; commands?: string[]; live?: { tokens?: number }; sid?: string; model?: string; bandText?: string; theme?: { value: string }; noColor?: boolean; denyTheme?: boolean; writtenTheme?: string } = {}) {
+function world(on: On, forkAnswers: ForkAnswer[], opts: { store?: Map<string, unknown>; commands?: string[]; live?: { tokens?: number }; sid?: string; model?: string; bandText?: string; theme?: { value: string }; noColor?: boolean; denyTheme?: boolean; writtenTheme?: string; box?: { text: string }; failResend?: string } = {}) {
   if (opts.store) {
     const store = opts.store
     on('store.get', ($, e) => ({ value: store.get(e.key) }))
@@ -53,6 +55,10 @@ function world(on: On, forkAnswers: ForkAnswer[], opts: { store?: Map<string, un
   const status: Array<string | undefined> = []
   const logs: string[] = []
   const entered: string[] = []
+  const toasts: string[] = []
+  const copies: string[] = []
+  const fills: string[] = []
+  const box = opts.box ?? { text: '' }
   on('session.start', ($, e) => ({ cwd: e.cwd }))
   on('session.id', () => ({ value: opts.sid ?? 'S1' }))
   on('session.model', () => ({ value: opts.model ?? 'claude-fable-5-1' }))
@@ -60,7 +66,15 @@ function world(on: On, forkAnswers: ForkAnswer[], opts: { store?: Map<string, un
   on('command.register', ($, e) => ({ value: { command: e.name } }))
   on('command.list', () => ({ value: (opts.commands ?? []).map(name => ({ name, description: '', source: 'plugin' as const })) }))
   on('turn.complete', ($, e) => ({ text: e.answer }))
-  on('prompt.submit', ($, e) => { entered.push(e.text); return { text: e.text } })
+  on('prompt.submit', ($, e) => {
+    if (opts.failResend && e.origin.kind === 'plugin') return { drop: opts.failResend }
+    entered.push(e.text)
+    return { text: e.text }
+  })
+  on('prompt.read', () => ({ value: { text: box.text, cursor: box.text.length } }))
+  on('prompt.fill', ($, e) => { fills.push(e.text); box.text = e.text; return { isFilled: true } })
+  on('ui.copy', ($, e) => { copies.push(e.text); return { value: { isCopied: true as const } } })
+  on('ui.toast', ($, e) => { toasts.push(e.text); return { value: undefined } })
   on('session.compact', ($, e) => ({ messages: e.messages }))
   on('classic.SessionStart', () => ({}))
   on('ui.log', ($, e) => { logs.push(e.text); return { value: undefined } })
@@ -76,13 +90,13 @@ function world(on: On, forkAnswers: ForkAnswer[], opts: { store?: Map<string, un
     const value: ModelForkResult = { isAnswered: true, text: 'warm', usage: { input_tokens: a.input ?? 2, output_tokens: a.out ?? 1, cache_read_input_tokens: a.read, cache_creation_input_tokens: a.write } }
     return { value }
   })
-  return { forks, status, logs, entered, reads }
+  return { forks, status, logs, entered, reads, toasts, copies, fills, box }
 }
 
 const warm: ForkAnswer = { read: 200000, write: 0 }
 
 const bandProps: RenderPropsOf['AbovePrompt'] = {
-  hasSurvey: false, isWorking: false, maxRows: 10, bodyColumns: 75,
+  hasSurvey: false, isWorking: false, isCollapsed: false, maxRows: 10, bodyColumns: 75,
   scroll: { offset: 0, bodyRows: 10 }, view: {},
 }
 
@@ -147,7 +161,7 @@ describe('cache indicator', () => {
       await $.config.set(themeChange('light'))
       await clock.advance(HOUR)
       expect((await ui.find({ type }))?.props.source).toEqual(surface === 'terminal' ? { png: statusIcons.light.cold.png } : statusIcons.light.cold.svg)
-      expect((await ui.find({ type: 'Text', text: /^cold$/ }))?.props.color).toBe('#c15f3c')
+      expect((await ui.find({ type: 'Text', text: /^cold$/ }))?.props.color).toBe(bandColors(true).coralInk)
       expect(w.forks.length).toBe(0)
       await $.command.run(run('keepwarm', 'off'))
       expect(await ui.find({ type })).toBe(undefined)
@@ -180,16 +194,16 @@ describe('cache indicator', () => {
       expect((await ui.find({ type: 'Text', text: /^(warm|cold|unknown|stopped)$/ }))?.props.color).toBe(undefined)
       expect((await ui.find(row))?.text).toMatch(/unknown.*waiting for the first turn/)
       await $.turn.complete(turn())
-      expect((await ui.find({ type: 'Text', text: /^(warm|cold|unknown|stopped)$/ }))?.props.color).toBe('success')
+      expect((await ui.find({ type: 'Text', text: /^(warm|cold|unknown|stopped)$/ }))?.props.color).toBe(bandColors(false).jade)
       expect((await ui.find(row))?.text).toMatch(/warm.*ping in 1h30m/)
       await clock.advance(HOUR)
-      expect((await ui.find({ type: 'Text', text: /^(warm|cold|unknown|stopped)$/ }))?.props.color).toBe('#d97757')
-      expect((await ui.find(row))?.text).toMatch(/cold.*first ping/)
+      expect((await ui.find({ type: 'Text', text: /^(warm|cold|unknown|stopped)$/ }))?.props.color).toBe(bandColors(false).coralInk)
+      expect((await ui.find(row))?.text).toMatch(/cold.*keepwarm starts pinging after your next turn/)
       expect((await $.command.run(run('cache-tax', ''))).text).toMatch(/state       COLD/)
       expect(w.forks.length).toBe(0)
       expect((await ui.find({ text: /^other mod$/ }))?.text).toBe('other mod')
       await $.turn.complete(turn())
-      expect((await ui.find({ type: 'Text', text: /^(warm|cold|unknown|stopped)$/ }))?.props.color).toBe('success')
+      expect((await ui.find({ type: 'Text', text: /^(warm|cold|unknown|stopped)$/ }))?.props.color).toBe(bandColors(false).jade)
       expect((await $.command.run(run('cache-tax', ''))).text).toMatch(/state       warm/)
       expect(w.status.filter(Boolean)).toEqual([])
       await $.command.run(run('keepwarm', 'off'))
@@ -204,14 +218,14 @@ describe('cache indicator', () => {
     await $.session.start({ ...session, surface: 'terminal', isInteractive: true })
     const ui = await $.ui.mount({ plugin: 'cache-tax', surface: 'terminal', component: 'AbovePrompt', props: bandProps })
     await $.classic.SessionStart({ source: 'resume', seconds_since_last_response: 7200, context_tokens: 200000, prompt_cache_likely_expired: true })
-    expect((await ui.find({ type: 'Text', text: /^(warm|cold|unknown|stopped)$/ }))?.props.color).toBe('#d97757')
+    expect((await ui.find({ type: 'Text', text: /^(warm|cold|unknown|stopped)$/ }))?.props.color).toBe(bandColors(false).coralInk)
     await $.session.compact({ trigger: 'manual', messages: [{ role: 'user', text: 'summary', toolUses: [] }] })
     expect((await ui.find({ type: 'Text', text: /^(warm|cold|unknown|stopped)$/ }))?.props.color).toBe(undefined)
     expect((await ui.find({ type: 'Text', text: 'cache-tax' }))?.text).toMatch(/unknown.*after compaction/)
     await clock.advance(HOUR)
     expect(w.forks.length).toBe(0)
     await $.turn.complete(turn())
-    expect((await ui.find({ type: 'Text', text: /^(warm|cold|unknown|stopped)$/ }))?.props.color).toBe('success')
+    expect((await ui.find({ type: 'Text', text: /^(warm|cold|unknown|stopped)$/ }))?.props.color).toBe(bandColors(false).jade)
     await $.classic.SessionStart({ source: 'clear' })
     expect(await ui.find({ text: 'cache-tax' })).toBe(undefined)
     await clock.advance(HOUR)
@@ -239,11 +253,11 @@ describe('cache indicator', () => {
     await $.session.start({ ...session, surface: 'terminal', isInteractive: true })
     await $.classic.SessionStart({ source: 'resume', seconds_since_last_response: 30 * 60, context_tokens: 200000 })
     const ui = await $.ui.mount({ plugin: 'cache-tax', surface: 'terminal', component: 'AbovePrompt', props: bandProps })
-    expect((await ui.find({ type: 'Text', text: /^(warm|cold|unknown|stopped)$/ }))?.props.color).toBe('success')
+    expect((await ui.find({ type: 'Text', text: /^(warm|cold|unknown|stopped)$/ }))?.props.color).toBe(bandColors(false).jade)
     await $.turn.complete(turn({ agentId: 'worker' }))
     await $.session.compact({ trigger: 'manual', agentId: 'worker', messages: [{ role: 'user', text: 'summary', toolUses: [] }] })
     await clock.advance(30 * MIN)
-    expect((await ui.find({ type: 'Text', text: /^(warm|cold|unknown|stopped)$/ }))?.props.color).toBe('#d97757')
+    expect((await ui.find({ type: 'Text', text: /^(warm|cold|unknown|stopped)$/ }))?.props.color).toBe(bandColors(false).coralInk)
     expect(w.forks.length).toBe(0)
   })
 
@@ -268,7 +282,7 @@ describe('cache indicator', () => {
     await $.command.run(run('keepwarm', '3h'))
     const ui = await $.ui.mount({ plugin: 'cache-tax', surface: 'terminal', component: 'AbovePrompt', props: bandProps })
     await clock.advance(50 * MIN)
-    expect((await ui.find({ type: 'Text', text: /^(warm|cold|unknown|stopped)$/ }))?.props.color).toBe('success')
+    expect((await ui.find({ type: 'Text', text: /^(warm|cold|unknown|stopped)$/ }))?.props.color).toBe(bandColors(false).jade)
     expect((await ui.find({ type: 'Text', text: 'cache-tax' }))?.text).toMatch(/last ping read 200k/)
     await clock.advance(50 * MIN)
     expect((await ui.find({ type: 'Text', text: /^(warm|cold|unknown|stopped)$/ }))?.props.color).toBe(undefined)
@@ -444,19 +458,20 @@ describe('guard', () => {
     const w = world(on, [], { commands: ['cache-tax:status'] })
     await $.session.start(session)
     expect(w.logs.at(-1)).toMatch(/hook form .* is also installed/)
+    expect(w.toasts.at(-1)).toMatch(/^cache-tax: the hook form .* is also installed/)
   })
 })
 
 describe('held send card', () => {
-  test('Send anyway resends the held message once and scores the write it pays', async ($, on) => {
+  test('Send message resends the held message once and scores the write it pays', async ($, on) => {
     const clock = mock.clock(on, { now: START })
     const w = world(on, [])
     await $.session.start({ ...session, surface: 'terminal', isInteractive: true })
     const ui = await $.ui.mount({ plugin: 'cache-tax', surface: 'terminal', component: 'AbovePrompt', props: bandProps })
     await $.turn.complete(turn())
     await clock.advance(3 * HOUR)
-    expect((await $.prompt.submit(prompt('hi'))).drop).toMatch(/^cache-tax: the prompt cache went cold 2h00m ago\..* Send it again, or use Send anyway below\.$/)
-    expect((await ui.find({ key: 'cache-tax-send' }))?.props.label).toBe('Send anyway ≈$4.01')
+    expect((await $.prompt.submit(prompt('hi'))).drop).toMatch(/^cache-tax: the prompt cache went cold 2h00m ago\..* Send it again, or use Send message below\.$/)
+    expect((await ui.find({ key: 'cache-tax-send' }))?.props.label).toBe('Send message ≈$4.01')
     await $.ui.press({ plugin: 'cache-tax', key: 'cache-tax-send' })
     expect(w.entered).toEqual(['hi'])
     expect(await ui.find({ key: 'cache-tax-send' })).toBe(undefined)
@@ -465,7 +480,7 @@ describe('held send card', () => {
     expect((await $.command.run(run('cache-tax', 'status'))).text).toMatch(/session     1 cold write paid, \$0\.10/)
   })
 
-  test('a double press of Send anyway sends the message once', async ($, on) => {
+  test('a double press of Send message sends the message once', async ($, on) => {
     const clock = mock.clock(on, { now: START })
     const w = world(on, [])
     await $.session.start({ ...session, surface: 'terminal', isInteractive: true })
@@ -513,21 +528,21 @@ describe('held send card', () => {
     expect(await ui.find({ type: 'Text', text: /pinging/ })).toBe(undefined)
   })
 
-  for (const [what, input] of [
-    ['an attachment', { ...prompt('see this'), attachments: [{ type: 'image' }] }],
-    ['an @-mention', prompt('read @src/app.ts first')],
-  ] satisfies Array<[string, PromptSubmitInput]>) {
-    test(`a held message with ${what} offers no Send anyway`, async ($, on) => {
+  for (const [what, input, blocker] of [
+    ['an attachment', { ...prompt('see this'), attachments: [{ type: 'image' }] }, 'has an attachment'],
+    ['an @-mention of a path', prompt('read @src/app.ts first'), 'mentions @src/app.ts'],
+  ] satisfies Array<[string, PromptSubmitInput, string]>) {
+    test(`a held message with ${what} offers no Send message`, async ($, on) => {
       const clock = mock.clock(on, { now: START })
       const w = world(on, [])
       await $.session.start({ ...session, surface: 'terminal', isInteractive: true })
       const ui = await $.ui.mount({ plugin: 'cache-tax', surface: 'terminal', component: 'AbovePrompt', props: bandProps })
       await $.turn.complete(turn())
       await clock.advance(3 * HOUR)
-      expect((await $.prompt.submit(input)).drop).toMatch(/Send it again from the prompt to pay it\.$/)
+      expect((await $.prompt.submit(input)).drop?.endsWith(`It ${blocker}, so send it again from the prompt to pay it.`)).toBe(true)
       expect(await ui.find({ key: 'cache-tax-send' })).toBe(undefined)
       expect((await ui.find({ key: 'cache-tax-cancel' }))?.props.label).toBe('Discard message')
-      expect(await ui.find({ type: 'Text', text: /attachments or @-mentions/ })).toBeDefined()
+      expect((await ui.find({ type: 'Text', text: /so send it again from the prompt\.$/ }))?.text).toBe(`It ${blocker}, so send it again from the prompt.`)
       expect(w.entered).toEqual([])
     })
   }
@@ -543,12 +558,12 @@ describe('held send card', () => {
     const note = (text: string): PromptSubmitInput => ({ text, wait: false, origin: { kind: 'task-notification' } })
     const first = await $.prompt.submit(note('a background task finished'))
     expect(first.drop).toMatch(/^cache-tax: the prompt cache went cold 2h00m ago\..* Send it again to pay it, then \/keepwarm holds the cache\. Or \/clear and start from a note\.$/)
-    expect((await ui.find({ key: 'cache-tax-send' }))?.props.label).toBe('Send anyway ≈$4.01')
+    expect((await ui.find({ key: 'cache-tax-send' }))?.props.label).toBe('Send message ≈$4.01')
     expect(w.entered).toEqual([])
     const second = await $.prompt.submit(note('another background task finished'))
     expect(second.drop).toBe(undefined)
     expect(w.entered).toEqual(['another background task finished'])
-    expect((await ui.find({ key: 'cache-tax-send' }))?.props.label).toBe('Send anyway ≈$4.01')
+    expect((await ui.find({ key: 'cache-tax-send' }))?.props.label).toBe('Send message ≈$4.01')
   })
 })
 
@@ -661,7 +676,7 @@ describe('keepwarm', () => {
     const w = world(on, [warm])
     await $.session.start(session)
     const r = await $.command.run(run('keepwarm', ''))
-    expect(r.text).toMatch(/^keepwarm on for 6h00m, a ping 50m after each idle stretch/)
+    expect(r.text).toMatch(/^keepwarm on for 6h00m, a ping 50m after each idle stretch keeps the 1h cache warm/)
     await $.turn.complete(turn())
     expect(w.status.at(-1)).toBe('keepwarm 6h00m left · ping in 50m')
     await clock.advance(50 * MIN)
@@ -768,14 +783,14 @@ describe('keepwarm', () => {
     await $.turn.complete(turn())
     await clock.advance(15 * 24 * HOUR)
     const r = await $.command.run(run('keepwarm', ''))
-    expect(r.text).toBe('keepwarm on for 6h00m. The cache is cold now, so the first ping comes 50m after the next turn')
-    expect(w.status.at(-1)).toBe('keepwarm 6h00m left · cold now, first ping 50m after the next turn')
+    expect(r.text).toBe('keepwarm on for 6h00m. The cache is cold now, so keepwarm starts pinging after your next turn')
+    expect(w.status.at(-1)).toBe('keepwarm 6h00m left · cold now. keepwarm starts pinging after your next turn')
     await clock.advance(1 * MIN)
     expect(w.forks.length).toBe(0)
     await clock.advance(60 * MIN)
     expect(w.forks.length).toBe(0)
     const card = await $.command.run(run('cache-tax', ''))
-    expect(card.text).toMatch(/keepwarm    on, 4h59m left · cold now, first ping 50m after the next turn/)
+    expect(card.text).toMatch(/keepwarm    on, 4h59m left · cold now\. keepwarm starts pinging after your next turn/)
     await $.turn.complete(turn())
     expect(w.status.at(-1)).toBe('keepwarm 4h59m left · ping in 50m')
     await clock.advance(49 * MIN)
@@ -792,14 +807,14 @@ describe('keepwarm', () => {
     await $.turn.complete(turn())
     await $.command.run(run('keepwarm', 'off'))
     await clock.advance(15 * 24 * HOUR)
-    // The test kit cannot raise classic.SessionStart, so the cold state comes from the turn above and a second start arms the switch over it.
+    // The cold state comes from the turn above and the clock; a second session start then arms the always switch over it.
     store.set('always', true)
     await $.session.start(session)
-    expect(w.status.at(-1)).toBe('keepwarm 6h00m left · cold now, first ping 50m after the next turn')
+    expect(w.status.at(-1)).toBe('keepwarm 6h00m left · cold now. keepwarm starts pinging after your next turn')
     await clock.advance(1 * MIN)
     expect(w.forks.length).toBe(0)
     const r = await $.command.run(run('keepwarm', 'always'))
-    expect(r.text).toBe('keepwarm always on: every session starts with a 6h00m window; /keepwarm off turns it off for good. The cache is cold now, so the first ping comes 50m after the next turn')
+    expect(r.text).toBe('keepwarm always on: every session starts with a 6h00m window; /keepwarm off turns it off for good. The cache is cold now, so keepwarm starts pinging after your next turn')
     await clock.advance(60 * MIN)
     expect(w.forks.length).toBe(0)
     await $.turn.complete(turn())
@@ -932,5 +947,330 @@ describe('store per session', () => {
     world(on, [], { store, sid: 'mine' })
     await $.session.start(session)
     expect([...store.keys()]).toEqual(['deadline:other', 'every:other'])
+  })
+})
+
+describe('settings', () => {
+  test('readSettings fills the defaults and names each value it could not use', async () => {
+    expect(readSettings({})).toEqual(DEFAULT_SETTINGS)
+    expect(readSettings({ cacheTtl: '5m', guardMinTokens: 120000, defaultWindow: '2h30m' })).toEqual({ cacheTtl: '5m', guardMinTokens: 120000, defaultWindowMs: 150 * MIN, problems: [] })
+    const bad = readSettings({ cacheTtl: '10m', guardMinTokens: -5, defaultWindow: 'soon' })
+    expect(bad.cacheTtl).toBe('1h')
+    expect(bad.guardMinTokens).toBe(50000)
+    expect(bad.defaultWindowMs).toBe(6 * HOUR)
+    expect(bad.problems).toEqual([
+      'Cache lifetime (cacheTtl) is "10m", which is neither 1h nor 5m, so the mod uses 1h',
+      'Guard threshold (guardMinTokens) is "-5", which is not a whole number of tokens, so the guard uses 50,000',
+      'Default keepwarm window (defaultWindow) is "soon", which is not a duration such as 6h, 90m or 2h30m, so a bare /keepwarm arms 6h00m',
+    ])
+  })
+
+  test('TTL timings: 1h goes cold after an hour and pings at 50m, 5m after five minutes and pings at 4m', async () => {
+    const hour = freshState(readSettings({ cacheTtl: '1h' }))
+    expect(ttlMsOf(hour)).toBe(HOUR)
+    expect(pingAfterMsOf(hour)).toBe(50 * MIN)
+    expect(hour.every).toBe(50 * MIN)
+    const fiveMinutes = freshState(readSettings({ cacheTtl: '5m' }))
+    expect(ttlMsOf(fiveMinutes)).toBe(5 * MIN)
+    expect(pingAfterMsOf(fiveMinutes)).toBe(4 * MIN)
+    expect(fiveMinutes.every).toBe(4 * MIN)
+  })
+
+  test('5m cache: pings 4 minutes after a turn and warns once with the hourly cost', { options: { cacheTtl: '5m' } }, async ($, on) => {
+    const clock = mock.clock(on, { now: START })
+    const w = world(on, [warm, warm])
+    await $.session.start(session)
+    await $.turn.complete(turn())
+    const first = await $.command.run(run('keepwarm', '1h'))
+    // 15 pings an hour of 200,502 tokens at Fable 5.1's $0.25/MTok read rate.
+    expect(first.text).toMatch(/On the 5m cache keepwarm pings every 4m, 15 pings an hour: about \$0\.75 an hour at the current 201k-token context$/)
+    await clock.advance(3 * MIN)
+    expect(w.forks.length).toBe(0)
+    await clock.advance(1 * MIN)
+    expect(w.forks.length).toBe(1)
+    const second = await $.command.run(run('keepwarm', '2h'))
+    expect(second.text).not.toMatch(/On the 5m cache/)
+  })
+
+  test('5m cache: cold after five idle minutes, priced at the 5-minute write rate', { options: { cacheTtl: '5m' } }, async ($, on) => {
+    const clock = mock.clock(on, { now: START })
+    const w = world(on, [])
+    await $.session.start(session)
+    await $.turn.complete(turn())
+    await clock.advance(4 * MIN)
+    expect((await $.command.run(run('cache-tax', ''))).text).toMatch(/state       warm, 1m left/)
+    await clock.advance(1 * MIN)
+    const card = await $.command.run(run('cache-tax', ''))
+    expect(card.text).toMatch(/state       COLD/)
+    expect(card.text).toMatch(/lifetime    5m cache, cold after 5m idle, writes at \$12\.5\/MTok; set by Cache lifetime \(cacheTtl\)/)
+    // 200,502 tokens at Fable 5.1's 5-minute write rate, $12.50/MTok.
+    expect((await $.prompt.submit(prompt('hi'))).drop).toMatch(/at \$12\.5\/MTok = \$2\.51/)
+    expect(w.entered).toEqual([])
+  })
+
+  test('guard threshold: under it the status says why a cold send went through', { options: { guardMinTokens: 300000 } }, async ($, on) => {
+    const clock = mock.clock(on, { now: START })
+    const w = world(on, [])
+    await $.session.start(session)
+    await $.turn.complete(turn())
+    // Warm, the line has nothing to explain.
+    expect(w.status.at(-1)).toBe(undefined)
+    await clock.advance(59 * MIN)
+    expect(w.status.at(-1)).toBe(undefined)
+    // Cold with keepwarm off, it says why the next send goes through.
+    await clock.advance(1 * MIN)
+    expect(w.status.at(-1)).toBe('cache cold · guard off below 300k tokens')
+    await $.command.run(run('keepwarm', '6h'))
+    expect(w.status.at(-1)).toBe('keepwarm 6h00m left · cold now. keepwarm starts pinging after your next turn · guard off below 300k tokens')
+    await $.command.run(run('keepwarm', 'off'))
+    expect(w.status.at(-1)).toBe('cache cold · guard off below 300k tokens')
+    await $.prompt.submit(prompt('hi'))
+    expect(w.entered).toEqual(['hi'])
+    expect((await $.command.run(run('cache-tax', ''))).text).toMatch(/guard off below 300k tokens: this context is 201k, so a cold send goes through/)
+    await $.turn.complete(turn())
+    expect(w.status.at(-1)).toBe(undefined)
+  })
+
+  test('guard threshold: /keepwarm off on a warm cache still shows the guard-off line once it goes cold', { options: { guardMinTokens: 300000 } }, async ($, on) => {
+    const clock = mock.clock(on, { now: START })
+    const w = world(on, [])
+    await $.session.start(session)
+    await $.turn.complete(turn())
+    await $.command.run(run('keepwarm', '6h'))
+    expect(w.status.at(-1)).toBe('keepwarm 6h00m left · ping in 50m')
+    await $.command.run(run('keepwarm', 'off'))
+    expect(w.status.at(-1)).toBe(undefined)
+    await clock.advance(HOUR)
+    expect(w.status.at(-1)).toBe('cache cold · guard off below 300k tokens')
+    expect(w.forks.length).toBe(0)
+  })
+
+  test('guard threshold: the band row appears once the cache is cold, keepwarm off', { options: { guardMinTokens: 300000 } }, async ($, on) => {
+    const clock = mock.clock(on, { now: START })
+    world(on, [])
+    await $.session.start({ ...session, surface: 'terminal', isInteractive: true })
+    const ui = await $.ui.mount({ plugin: 'cache-tax', surface: 'terminal', component: 'AbovePrompt', props: bandProps })
+    await $.turn.complete(turn())
+    expect(await ui.find({ type: 'Text', text: 'cache-tax' })).toBe(undefined)
+    await clock.advance(HOUR)
+    expect((await ui.find({ type: 'Text', text: 'cache-tax' }))?.text).toMatch(/cold.* · guard off below 300k tokens$/)
+  })
+
+  test('defaultWindow sets what a bare /keepwarm arms', { options: { defaultWindow: '2h' } }, async ($, on) => {
+    mock.clock(on, { now: START })
+    world(on, [])
+    await $.session.start(session)
+    expect((await $.command.run(run('keepwarm', ''))).text).toMatch(/^keepwarm on for 2h00m/)
+  })
+})
+
+describe('ping spend and savings', () => {
+  test('a turn that arrives warm after a gap longer than the TTL, thanks to a ping, saves one cold write', async ($, on) => {
+    const clock = mock.clock(on, { now: START })
+    const w = world(on, [warm, warm])
+    await $.session.start({ ...session, surface: 'terminal', isInteractive: true })
+    const ui = await $.ui.mount({ plugin: 'cache-tax', surface: 'terminal', component: 'AbovePrompt', props: bandProps })
+    await $.turn.complete(turn())
+    await $.command.run(run('keepwarm', '6h'))
+    await clock.advance(50 * MIN)
+    await clock.advance(50 * MIN)
+    expect(w.forks.length).toBe(2)
+    await clock.advance(20 * MIN)
+    await $.turn.complete(turn())
+    // Two pings of about $0.05 each; the turn avoided a 200,502-token write at $20/MTok.
+    expect((await ui.find({ type: 'Text', text: 'cache-tax' }))?.text).toMatch(/keepwarm: pings \$0\.10, saved about \$4\.01/)
+    const card = await $.command.run(run('cache-tax', ''))
+    expect(card.text).toMatch(/savings     keepwarm: pings \$0\.10, saved about \$4\.01 this session \(1 cold write avoided\); the totals reset each session/)
+  })
+
+  test('savings math: no ping in the gap, or a gap within the TTL, saves nothing', async () => {
+    const base = () => {
+      const state = freshState()
+      state.lastModel = 'claude-fable-5-1'
+      state.ctx = 200000
+      state.lastTurnAt = START
+      state.lastRequestAt = START
+      return state
+    }
+    const noPing = base()
+    expect(noteTurnRequest(noPing, START + 2 * HOUR)).toBe(null)
+    const shortGap = base()
+    shortGap.lastPingAt = START + 50 * MIN
+    shortGap.lastRequestAt = shortGap.lastPingAt
+    expect(noteTurnRequest(shortGap, START + 55 * MIN)).toBe(null)
+    const saved = base()
+    saved.lastPingAt = START + 100 * MIN
+    saved.lastRequestAt = saved.lastPingAt
+    saved.pingCount = 2
+    saved.pingSpendUsd = 0.1
+    expect(noteTurnRequest(saved, START + 2 * HOUR)).toBe(4)
+    expect(saved.savedUsd).toBe(4)
+    expect(saved.avoidedColdWrites).toBe(1)
+    expect(savingsText(saved)).toBe('keepwarm: pings $0.10, saved about $4.00')
+    // The same gap a second time is not counted again: the turn clock moved.
+    expect(noteTurnRequest(saved, START + 2 * HOUR + MIN)).toBe(null)
+    resetForClear(saved)
+    expect(savingsText(saved)).toBe('keepwarm: pings $0.00, saved about $0.00')
+  })
+
+  test('the hourly ping cost reads the context at the read rate', async () => {
+    const state = freshState(readSettings({ cacheTtl: '5m' }))
+    expect(pingCostPerHour(state)).toBe(null)
+    state.lastModel = 'claude-sonnet-5'
+    state.ctx = 100000
+    // 15 pings an hour of 100,000 tokens at $0.20/MTok.
+    expect(Math.round((pingCostPerHour(state) ?? 0) * 1e6) / 1e6).toBe(0.3)
+  })
+})
+
+describe('held message restore and resendability', () => {
+  const holdOne = async ($: Engine, clock: MockClock) => {
+    await $.session.start({ ...session, surface: 'terminal', isInteractive: true })
+    await $.turn.complete(turn())
+    await clock.advance(3 * HOUR)
+    await $.prompt.submit(prompt('the long question'))
+  }
+
+  test('compaction puts the held text back in an empty prompt box', async ($, on) => {
+    const clock = mock.clock(on, { now: START })
+    const w = world(on, [])
+    await holdOne($, clock)
+    await $.session.compact({ trigger: 'manual', messages: [{ role: 'user', text: 'summary', toolUses: [] }] })
+    expect(w.fills).toEqual(['the long question'])
+    expect(w.toasts.at(-1)).toBe('Your held message is back in the prompt box: the conversation was compacted')
+  })
+
+  test('another turn with a draft in the box copies the held text and says why', async ($, on) => {
+    const clock = mock.clock(on, { now: START })
+    const w = world(on, [], { box: { text: 'half typed' } })
+    await holdOne($, clock)
+    await $.turn.complete(turn())
+    expect(w.fills).toEqual([])
+    expect(w.copies).toEqual(['the long question'])
+    expect(w.toasts.at(-1)).toBe('Your held message is on the clipboard: another turn ran before you sent it, and the prompt box already had a draft')
+  })
+
+  test('a different message sent while one is held goes through, and the held one comes back after its turn', async ($, on) => {
+    const clock = mock.clock(on, { now: START })
+    const w = world(on, [])
+    await holdOne($, clock)
+    expect((await $.prompt.submit(prompt('a shorter question'))).drop).toBe(undefined)
+    expect(w.entered).toEqual(['a shorter question'])
+    expect(w.fills).toEqual([])
+    await $.turn.complete(turn())
+    expect(w.fills).toEqual(['the long question'])
+    expect(w.toasts.at(-1)).toBe('Your held message is back in the prompt box: you sent a different message while it was held')
+  })
+
+  test('sending the held message itself again gives nothing back', async ($, on) => {
+    const clock = mock.clock(on, { now: START })
+    const w = world(on, [])
+    await holdOne($, clock)
+    await $.prompt.submit(prompt('the long question'))
+    expect(w.entered).toEqual(['the long question'])
+    await $.turn.complete(turn())
+    expect(w.fills).toEqual([])
+    expect(w.copies).toEqual([])
+  })
+
+  test('a resume puts the held text back too', async ($, on) => {
+    const clock = mock.clock(on, { now: START })
+    const w = world(on, [])
+    await holdOne($, clock)
+    await $.classic.SessionStart({ source: 'resume', seconds_since_last_response: 30, context_tokens: 200000 })
+    expect(w.fills).toEqual(['the long question'])
+    expect(w.toasts.at(-1)).toBe('Your held message is back in the prompt box: the session was resumed')
+  })
+
+  test('the held card buttons carry hotkeys 1 and 2, drawn plain so the digit shows', async ($, on) => {
+    const clock = mock.clock(on, { now: START })
+    world(on, [])
+    await holdOne($, clock)
+    const ui = await $.ui.mount({ plugin: 'cache-tax', surface: 'terminal', component: 'AbovePrompt', props: bandProps })
+    const send = await ui.find({ key: 'cache-tax-send' })
+    const discard = await ui.find({ key: 'cache-tax-cancel' })
+    expect(send?.props.hotkey).toBe('1')
+    expect(send?.props.plain).toBe(true)
+    expect(send?.props.label).toBe('Send message ≈$4.01')
+    expect(discard?.props.hotkey).toBe('2')
+    expect(discard?.props.plain).toBe(true)
+    expect(discard?.props.label).toBe('Discard message')
+  })
+
+  test('the one-line card leads with the price, then how long the cache has been cold', async ($, on) => {
+    const clock = mock.clock(on, { now: START })
+    world(on, [])
+    await holdOne($, clock)
+    const ui = await $.ui.mount({ plugin: 'cache-tax', surface: 'terminal', component: 'AbovePrompt', props: { ...bandProps, maxRows: 4 } })
+    expect((await ui.find({ type: 'Text', text: /^about \S+ to send cold, cache cold for \S+$/ }))?.text).toBe('about $4.01 to send cold, cache cold for 2h00m')
+    expect((await ui.find({ type: 'Text', text: /^ · message held/ }))?.text).toBe(' · message held, a warm turn about $0.05')
+  })
+
+  test('a refused resend comes back with a toast naming the cause', async ($, on) => {
+    const clock = mock.clock(on, { now: START })
+    const w = world(on, [], { failResend: 'the session is busy with another turn' })
+    await holdOne($, clock)
+    const ui = await $.ui.mount({ plugin: 'cache-tax', surface: 'terminal', component: 'AbovePrompt', props: bandProps })
+    await $.ui.press({ plugin: 'cache-tax', key: 'cache-tax-send' })
+    expect(w.toasts.at(-1)).toBe('cache-tax: the resend did not go through: the session is busy with another turn')
+    expect(await ui.find({ key: 'cache-tax-send' })).toBeDefined()
+  })
+
+  test('@everyone stays resendable; a path mention or an attachment does not', async () => {
+    expect(heldBlocker('thanks @everyone, ship it', 0)).toBe(null)
+    expect(heldBlocker('ping @here', 0)).toBe(null)
+    expect(heldBlocker('mail a@b.com', 0)).toBe(null)
+    expect(heldBlocker('read @src/a.ts first', 0)).toBe('mentions @src/a.ts')
+    expect(heldBlocker('see @README.md.', 0)).toBe('mentions @README.md')
+    expect(heldBlocker('see this', 1)).toBe('has an attachment')
+  })
+
+  test('a held message with @everyone keeps Send message', async ($, on) => {
+    const clock = mock.clock(on, { now: START })
+    world(on, [])
+    await $.session.start({ ...session, surface: 'terminal', isInteractive: true })
+    const ui = await $.ui.mount({ plugin: 'cache-tax', surface: 'terminal', component: 'AbovePrompt', props: bandProps })
+    await $.turn.complete(turn())
+    await clock.advance(3 * HOUR)
+    expect((await $.prompt.submit(prompt('thanks @everyone'))).drop).toMatch(/Send it again, or use Send message below\.$/)
+    expect((await ui.find({ key: 'cache-tax-send' }))?.props.label).toBe('Send message ≈$4.01')
+  })
+})
+
+describe('tip and help', () => {
+  test('the first cold write of $0.50 or more brings one /keepwarm tip, ever', async ($, on) => {
+    const clock = mock.clock(on, { now: START })
+    const store = new Map<string, unknown>()
+    const w = world(on, [], { store })
+    await $.session.start(session)
+    await $.turn.complete(turn())
+    await $.turn.complete(turn({ usage: usage({ cache_read_input_tokens: 0, cache_creation_input_tokens: 200502 }) }))
+    expect(w.toasts.filter(text => text.startsWith('Tip:'))).toEqual(['Tip: that cold write cost $4.01. /keepwarm pings the cache while you are away, so your next turn reads it at the cache-read rate. /keepwarm help lists its forms.'])
+    expect(store.get('keepwarmTipShown')).toBe(true)
+    await clock.advance(MIN)
+    await $.turn.complete(turn({ usage: usage({ cache_read_input_tokens: 0, cache_creation_input_tokens: 200502 }) }))
+    expect(w.toasts.filter(text => text.startsWith('Tip:')).length).toBe(1)
+  })
+
+  test('/keepwarm help and /cache-tax help list every argument, every included', async ($, on) => {
+    mock.clock(on, { now: START })
+    world(on, [])
+    await $.session.start(session)
+    const keepwarm = (await $.command.run(run('keepwarm', 'help'))).text
+    expect(keepwarm).toBe(keepwarmHelp(freshState()))
+    for (const form of ['/keepwarm  ', '/keepwarm 90m  ', '/keepwarm 90m every 2m', '/keepwarm always', '/keepwarm off', '/keepwarm status', '/keepwarm help']) expect(keepwarm).toContain(form)
+    const cacheTax = (await $.command.run(run('cache-tax', 'help'))).text
+    expect(cacheTax).toBe(cacheTaxHelp(freshState()))
+    for (const form of ['/cache-tax status', '/cache-tax guard refuse', '/cache-tax guard warn', '/cache-tax help', '/keepwarm 90m every 2m']) expect(cacheTax).toContain(form)
+    expect(cacheTax).toContain('Settings (/config, pulse-cache-tax):\n  Cache lifetime (cacheTtl): 1h\n  Guard threshold (guardMinTokens): 50,000 tokens\n  Default keepwarm window (defaultWindow): 6h00m')
+  })
+
+  test('the /keepwarm error lists every accepted form', async ($, on) => {
+    mock.clock(on, { now: START })
+    world(on, [])
+    await $.session.start(session)
+    const text = (await $.command.run(run('keepwarm', 'soon'))).text
+    expect(text).toBe('keepwarm does not take "soon". It takes a bare /keepwarm, a window such as 6h, 90m or 2h30m, a window with a ping period such as 90m every 2m, always, off, status or help.')
+    expect((await $.command.run(run('keepwarm', '90m every 10s'))).text).toBe('every takes a period of at least 1m, as in /keepwarm 90m every 2m; "10s" is not a period')
   })
 })

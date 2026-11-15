@@ -21,7 +21,7 @@ export function fmtDuration(ms: number): string {
 }
 
 export function fmtUsd(usd: number | null): string {
-  return usd == null ? 'n/a' : '$' + (usd >= 100 ? usd.toFixed(0) : usd.toFixed(2))
+  return usd == null ? 'price unknown' : '$' + (usd >= 100 ? usd.toFixed(0) : usd.toFixed(2))
 }
 
 export function fmtTok(count: number): string {
@@ -66,6 +66,13 @@ const JADE_DARK = '#5aa784'
 // A deeper coral for fills on cream; the brand coral stays on near-black.
 const CORAL_FILL_LIGHT = '#d4603f'
 
+/** The band's colours for text rows (terminal, and desktop's row text): coral ink and jade for the theme's background, and the coral its meter cells fill with. */
+export const bandColors = (isLight: boolean): { coralInk: string; coralFill: string; jade: string } => ({
+  coralInk: isLight ? CORAL_INK_LIGHT : CORAL_INK_DARK,
+  coralFill: isLight ? CORAL_FILL_LIGHT : CORAL,
+  jade: isLight ? JADE : JADE_DARK,
+})
+
 const css = (motion: string): string => `<style>
 .tx{fill:rgb(${TEXT_LIGHT})}.m{fill:rgba(${TEXT_LIGHT},.63)}.k{fill:rgba(${TEXT_LIGHT},.09)}
 .fw{fill:${JADE}}.fc{fill:${CORAL_FILL_LIGHT}}.ci{fill:${CORAL_INK_LIGHT}}.pt{fill:${LILAC}}.li{fill:${LILAC_INK_LIGHT}}
@@ -80,7 +87,7 @@ const textAt = (x: number, y: number, cls: string, size: number, content: string
   `<text class="${cls}" x="${x}" y="${y}" font-family="${FONT}" font-size="${size}"${extra}>${xml(content)}</text>`
 
 // ---------------------------------------------------------------------------
-// The warmth meter: a track as long as the cache's one-hour life, filled with what is left of it.
+// The warmth meter: a track as long as the cache's life (1h or 5m, the cacheTtl setting), filled with what is left of it.
 
 export type Warmth = {
   /** warm: the fill drains; pinging: keepwarm's ping is in flight; cold: only the price shows. */
@@ -96,8 +103,8 @@ export type Warmth = {
 
 export const METER_H = 20
 const TRACK_H = 6
-// Below this the fill reads as nearly gone, so it turns coral: the last ten minutes of the hour.
-const SOON_COLD_MS = 10 * 60 * 1000
+// Below this share of the cache's life the fill reads as nearly gone, so it turns coral: the last 10 minutes of 1h, the last 50 seconds of 5m.
+const SOON_COLD_FRACTION = 1 / 6
 // Narrower than this, a meter drops its label's small words and keeps the number.
 const COMPACT_W = 130
 
@@ -144,7 +151,7 @@ export const meterSvg = (given: Warmth, width: number): string => {
   const fill = isLive
     ? `<rect class="${fillClass} ${warmth.tone === 'pinging' ? 'pu' : 'dr'}" x="0" y="${trackY}" width="${fillW}" height="${TRACK_H}" rx="${radius}"/>`
     : ''
-  // The ping's mark: where on the hour keepwarm refills it, while that point is still ahead.
+  // The ping's mark: where on the cache's life keepwarm refills it, while that point is still ahead.
   const pingX = warmth.pingMsLeft != null && warmth.tone === 'warm' && warmth.pingMsLeft < warmth.msLeft
     ? Math.round(trackW * Math.min(1, Math.max(0, warmth.pingMsLeft / warmth.ttlMs)))
     : null
@@ -162,7 +169,7 @@ export const meterSvg = (given: Warmth, width: number): string => {
 export const meterAlt = (warmth: Warmth): string => {
   if (warmth.tone === 'pinging') return 'Prompt cache warm, keepwarm is pinging it now'
   if (warmth.tone === 'cold') {
-    return warmth.coldPrice ? `Prompt cache cold, the next message re-writes it for about ${warmth.coldPrice}` : 'Prompt cache cold, no price for this model'
+    return warmth.coldPrice ? `Prompt cache cold, the next message re-writes it for about ${warmth.coldPrice}` : 'Prompt cache cold, price unknown'
   }
   const minutes = minutesLeft(warmth.msLeft)
   const ping = warmth.pingMsLeft != null && warmth.pingMsLeft < warmth.msLeft
@@ -171,14 +178,14 @@ export const meterAlt = (warmth: Warmth): string => {
   return `Prompt cache warm for ${minutes} more minute${minutes === 1 ? '' : 's'}${ping}`
 }
 
-/** The terminal's meter: a row of cells standing for the hour, filled with what is left; none once cold. */
+/** The terminal's meter: a row of cells standing for the cache's life, filled with what is left; none once cold. */
 export const textMeter = (warmth: Warmth, cells: number): { filled: string; empty: string } => {
   if (warmth.tone === 'cold') return { filled: '', empty: '' }
   const filledCells = Math.max(1, Math.round(cells * Math.min(1, Math.max(0, warmth.msLeft / warmth.ttlMs))))
   return { filled: '━'.repeat(filledCells), empty: '─'.repeat(cells - filledCells) }
 }
 
-export const isSoonCold = (warmth: Warmth): boolean => warmth.tone === 'warm' && warmth.msLeft <= SOON_COLD_MS
+export const isSoonCold = (warmth: Warmth): boolean => warmth.tone === 'warm' && warmth.msLeft <= warmth.ttlMs * SOON_COLD_FRACTION
 
 // ---------------------------------------------------------------------------
 // The held send: what sending now re-writes, beside what a warm turn costs.
@@ -212,7 +219,7 @@ export const holdBarsHeight = (hold: Hold): number => (hold.rewriteUsd == null ?
 /** The card's evidence: what sending now re-writes, on one scale with what a warm turn would have cost. */
 export const holdBarsSvg = (hold: Hold, width: number): string => {
   if (hold.rewriteUsd == null) {
-    return svg(width, holdBarsHeight(hold), textAt(0, 14, 'm', 12, fitText('No price for this model, so the cost is unknown.', 12, width)))
+    return svg(width, holdBarsHeight(hold), textAt(0, 14, 'm', 12, fitText(`Price unknown: sending re-writes up to ${hold.tokens} tokens.`, 12, width)))
   }
   // The re-write fills its track; a warm turn is the sliver it would have cost.
   const rows: Array<{ label: string; usd: number; fillClass: string; inkClass: string }> = [
@@ -235,6 +242,6 @@ export const holdBarsSvg = (hold: Hold, width: number): string => {
 
 export const holdBarsAlt = (hold: Hold): string =>
   hold.rewriteUsd == null
-    ? `No price for this model; sending re-writes up to ${hold.tokens} tokens.`
+    ? `Price unknown: sending re-writes up to ${hold.tokens} tokens.`
     : `Sending now re-writes up to ${hold.tokens} tokens for about ${fmtUsd(hold.rewriteUsd)}` +
       (hold.warmUsd == null ? '.' : `; a warm turn would have cost ${fmtUsd(hold.warmUsd)}.`)

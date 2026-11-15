@@ -1,10 +1,34 @@
 {
   "name": "pulse-cache-tax",
-  "version": "2.4.0",
-  "description": "Keeps the one-hour prompt cache warm during /keepwarm windows and holds a cold send once with its estimated rewrite cost. Pinging runs only after /keepwarm. Fork of karanb192/cache-tax.",
+  "version": "2.5.0",
+  "description": "Keeps the prompt cache warm during /keepwarm windows (one-hour or five-minute cache) and holds a cold send once with its estimated rewrite cost. Pinging runs only after /keepwarm. Fork of karanb192/cache-tax.",
   "author": {
-    "name": "Karan Bansal"
+    "name": "MrValraven"
   },
   "repository": "https://github.com/karanb192/cache-tax",
-  "license": "MIT"
+  "license": "MIT",
+  "userConfig": {
+    "cacheTtl": {
+      "type": "string",
+      "title": "Cache lifetime",
+      "description": "How long the prompt cache lives after a request. 1h: cold after an hour idle, keepwarm pings 50 minutes after your last turn, cold writes priced at the 1-hour write rate. 5m: cold after five minutes idle, keepwarm pings every 4 minutes, cold writes priced at the 5-minute write rate.",
+      "default": "1h",
+      "options": [
+        "1h",
+        "5m"
+      ]
+    },
+    "guardMinTokens": {
+      "type": "number",
+      "title": "Guard threshold",
+      "description": "The cold-send guard holds or warns only when the context is at least this many tokens. Below it, while the cache is cold, the status row says guard off below this size.",
+      "default": 50000
+    },
+    "defaultWindow": {
+      "type": "string",
+      "title": "Default keepwarm window",
+      "description": "What a bare /keepwarm and /keepwarm always arm, written as 6h, 90m or 2h30m.",
+      "default": "6h"
+    }
+  }
 }
