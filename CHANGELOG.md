@@ -2,6 +2,10 @@
 
 One section per release. Each release is tagged `<mod>-v<version>`.
 
+## 2026-11-16
+
+- pulse-filetree 0.7.1: room to breathe in the desktop pane, with the header, the search and its controls, the tree, the Outside this folder list and the footer each set apart.
+
 ## 2026-11-14
 
 - pulse-ports 0.1.0: first publish, holds a command that would start a dev server on a port you keep for your own testing (3000 and your package.json ports) and offers a free one.
