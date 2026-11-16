@@ -232,12 +232,6 @@ export const fitText = (s: string, size: number, maxW: number): string => {
 const hex = (c: string): number[] => [1, 3, 5].map(i => parseInt(c.slice(i, i + 2), 16))
 const mix = (from: string, to: string, t: number): string =>
   '#' + hex(from).map((v, i) => Math.round(v + ((hex(to)[i] ?? 0) - v) * t).toString(16).padStart(2, '0')).join('')
-const pulseAt = (t: number): string => (t < 0.5 ? mix(CORAL, ROSE, t * 2) : mix(ROSE, JADE, (t - 0.5) * 2))
-
-const noise = (x: number, y: number): number => {
-  const s = Math.sin(x * 12.9898 + y * 78.233) * 43758.5453
-  return s - Math.floor(s)
-}
 
 // ---------------------------------------------------------------------------
 // Pixel crabs (sprites from savvy-progress, after DockCrab's Clawd), one costume per role.
@@ -346,120 +340,116 @@ export const crab = (x: number, y: number, role: Role, isWalking = false, scale 
 }
 
 // ---------------------------------------------------------------------------
-// The band above the prompt.
+// The band above the prompt: the crab, "Pulse", a slim track, the count in words, the percent.
 
-export const BAND_H = 22
-const BAR_H = 16
-const CELL = 3
-const CRAB_W = 26
+export const BAND_H = 24
+const TRACK_H = 6
+// The pride crab is 30 sprite cells wide; at the band's scale it takes 23 px.
+const BAND_CRAB_SCALE = 0.75
+const BAND_CRAB_W = 23
+const BAND_GAP = 10
+const BAND_TITLE = 'Pulse'
+const BAND_TITLE_SIZE = 12.5
+const BAND_WORDS_SIZE = 12
+const MIN_TRACK_W = 32
 
-const bandText = (done: number, total: number, stopped: number): string =>
-  progressOf(done, total).isFinished ? bandWords(done, total, stopped) : [`${done}/${total}`, `${total - done} working`, stopped ? `${stopped} stopped` : ''].filter(Boolean).join(' · ')
 const percentText = (done: number, total: number): string => `${Math.round(progressOf(done, total).ratio * 100)}%`
+
+// The band's words in the desktop drawing: "1 of 2 done", "All done", each with "· N stopped" when runs stopped.
+export const bandLabel = (done: number, total: number, stopped: number): string => {
+  const stoppedWords = stopped ? ` · ${stopped} stopped` : ''
+  return progressOf(done, total).isFinished ? `All done${stoppedWords}` : `${done} of ${total} done${stoppedWords}`
+}
+
+// Where the band's parts sit at width `W`. The track takes what the words and the percent leave.
+// As room shrinks the percent goes first, then the track, when the track would be under 32 px.
+export type BandLayout = { trackX: number; trackW: number; wordsX: number; hasTrack: boolean; hasPercent: boolean }
+export const bandLayout = (W: number, words: string, fromWords = ''): BandLayout => {
+  const trackX = Math.round(BAND_CRAB_W + 6 + textWidth(BAND_TITLE, BAND_TITLE_SIZE) + BAND_GAP)
+  const wordsSlot = Math.max(textWidth(words, BAND_WORDS_SIZE), textWidth(fromWords, BAND_WORDS_SIZE))
+  const percentSlot = textWidth('100%', BAND_WORDS_SIZE)
+  const roomWithPercent = Math.floor(W - trackX - BAND_GAP - wordsSlot - BAND_GAP - percentSlot)
+  const roomWithoutPercent = Math.floor(W - trackX - BAND_GAP - wordsSlot)
+  const hasPercent = roomWithPercent >= MIN_TRACK_W
+  const hasTrack = hasPercent || roomWithoutPercent >= MIN_TRACK_W
+  const trackW = hasPercent ? roomWithPercent : hasTrack ? roomWithoutPercent : 0
+  return { trackX, trackW, wordsX: hasTrack ? trackX + trackW + BAND_GAP : trackX, hasTrack, hasPercent }
+}
 
 // One tween: the element's attributes hold where it ends, the keyframe only where it starts.
 const tweenCss = (cls: string, from: string, delay: number): string =>
   `.${cls}{animation:${cls}k ${TWEEN_MS}ms ${EASE} ${delay}ms both}@keyframes ${cls}k{from{${from}}}`
 
+// The sheen that sweeps a filled bar while work goes on.
+const SHEEN_GRADIENT = '<linearGradient id="sheen" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#fff" stop-opacity="0"/><stop offset=".5" stop-color="#fff" stop-opacity=".55"/><stop offset="1" stop-color="#fff" stop-opacity="0"/></linearGradient>'
+
 export const bandSvg = (b: BarState, W: number, at: number): string => {
   const H = BAND_H
   const p = progressOf(b.done, b.total)
   const was = progressOf(b.fromDone, b.fromTotal)
-  const running = p.total - p.done
+  const isRunning = p.total > p.done
   const since = Math.round(at - b.changedAt)
   // A band that was hidden at zero runs has nothing to tween from.
   const isTweening = b.fromTotal > 0 && isTweenAt(b.changedAt, at)
-  const title = 'Pulse'
-  const BAR_X = Math.round(16 + textWidth(title, 13) + 12)
-  const BAR_W = Math.max(60, W - BAR_X - 46 - CRAB_W)
-  const fillW = Math.round(BAR_W * p.ratio)
-  const fromFillW = isTweening ? Math.round(BAR_W * Math.min(1, Math.max(0, b.fromRatio))) : fillW
-  const cols = Math.floor(fillW / CELL)
-  const dotCols = Math.floor(Math.max(fillW, fromFillW) / CELL)
-  const rows = Math.floor(BAR_H / CELL)
-  // Dithered fill, sparse at the start and dense toward the head, as one mask path per twinkle class.
-  // Columns past the final fill (a bar on its way down) stay at the head's density.
-  const paths = ['', '', '', '']
-  for (let c = 0; c < dotCols; c++) {
-    const density = Math.min(0.95, 0.35 + 0.6 * Math.pow(c / Math.max(1, cols), 1.2))
-    for (let r = 0; r < rows; r++) {
-      if (noise(c, r) < density) paths[Math.floor(noise(r, c) * 4)] += `M${c * CELL + 1} ${r * CELL + 1}h2v2h-2z`
-    }
-  }
-  const mask = paths.map((d, i) => (d ? `<path class="t${i}" fill="#fff" d="${d}"/>` : '')).join('')
-
-  const pillOf = (text: string, w: number) => {
-    const pillW = Math.round(18 + text.length * 6.6)
-    return { text, pillW, pillX: Math.max(0, Math.min(BAR_W - pillW, w - pillW)) }
-  }
-  const pillColorOf = (isFinished: boolean, pill: ReturnType<typeof pillOf>) =>
-    isFinished ? JADE : pulseAt(Math.min(1, (pill.pillX + pill.pillW) / BAR_W))
-  const to = pillOf(bandText(p.done, p.total, b.stopped ?? 0), fillW)
-  const from = pillOf(bandText(was.done, was.total, b.fromStopped ?? 0), fromFillW)
-  const pillColor = pillColorOf(p.isFinished, to)
-  const dot = p.isFinished ? JADE : CORAL
+  const words = bandLabel(p.done, p.total, b.stopped ?? 0)
+  const fromWords = bandLabel(was.done, was.total, b.fromStopped ?? 0)
+  const isWordsTween = isTweening && fromWords !== words
+  const layout = bandLayout(W, words, isWordsTween ? fromWords : '')
+  const trackW = layout.trackW
+  const trackY = (H - TRACK_H) / 2
+  const fillW = Math.round(trackW * p.ratio)
+  const fromFillW = isTweening ? Math.round(trackW * Math.min(1, Math.max(0, b.fromRatio))) : fillW
   const percent = percentText(p.done, p.total)
   const fromPercent = percentText(was.done, was.total)
   const isJadeTween = isTweening && was.isFinished !== p.isFinished
-  const isLabelTween = isTweening && from.text !== to.text
-  const isPercentTween = isTweening && fromPercent !== percent
+  const isPercentTween = layout.hasPercent && isTweening && fromPercent !== percent
+  const isSheenShown = layout.hasTrack && isRunning && fillW > 0
 
   const tweens = isTweening
     ? [
         tweenCss('rv', `width:${fromFillW}px`, -since),
-        tweenCss('pl', `transform:translateX(${from.pillX - to.pillX}px)`, -since),
-        tweenCss('pw', `width:${from.pillW}px;fill:${pillColorOf(was.isFinished, from)}`, -since),
         isJadeTween ? tweenCss('fj', `opacity:${was.isFinished ? 1 : 0}`, -since) : '',
-        isJadeTween ? tweenCss('dt', `fill:${was.isFinished ? JADE : CORAL}`, -since) : '',
         // Crossfades: the old words leave over the first 45%, the new ones arrive from 15% to 60%.
-        isLabelTween || isPercentTween
+        isWordsTween || isPercentTween
           ? `.xo{animation:xo ${TWEEN_MS}ms ease-in-out ${-since}ms both}.xi{animation:xi ${TWEEN_MS}ms ease-in-out ${-since}ms both}@keyframes xo{0%{opacity:1}45%,100%{opacity:0}}@keyframes xi{0%,15%{opacity:0}60%,100%{opacity:1}}`
           : '',
       ].join('')
     : ''
-  const fillRects = [
-    !p.isFinished || isJadeTween ? `<rect width="${BAR_W}" height="${BAR_H}" fill="url(#g)" mask="url(#m)"/>` : '',
-    p.isFinished || isJadeTween
-      ? `<rect class="fj" width="${BAR_W}" height="${BAR_H}" fill="${JADE}" opacity="${p.isFinished ? 1 : 0}" mask="url(#m)"/>`
-      : '',
+
+  // The fill: the gradient across the whole track, shown up to the fill width; a finished band fades to jade.
+  const fills = [
+    !p.isFinished || isJadeTween ? `<rect width="${trackW}" height="${TRACK_H}" fill="url(#g)"/>` : '',
+    p.isFinished || isJadeTween ? `<rect class="fj" width="${trackW}" height="${TRACK_H}" fill="${JADE}" opacity="${p.isFinished ? 1 : 0}"/>` : '',
+    isSheenShown ? `<rect class="sh" width="${fillW}" height="${TRACK_H}" fill="url(#sheen)"/>` : '',
   ].join('')
-  const label = (text: string, x: number, cls: string, opacity: number) =>
-    `<text${cls ? ` class="${cls}"` : ''} x="${x}" y="${BAR_H / 2 + 4}" text-anchor="middle" font-family="${FONT}" font-size="11" font-weight="600" fill="#ffffff"${opacity < 1 ? ` opacity="${opacity}"` : ''}>${xml(text)}</text>`
+  const track = layout.hasTrack
+    ? `<g transform="translate(${layout.trackX},${trackY})"><rect class="k" width="${trackW}" height="${TRACK_H}" rx="${TRACK_H / 2}"/><g clip-path="url(#r)">${fills}</g></g>`
+    : ''
+
+  const wordsRoom = layout.hasTrack ? Infinity : W - layout.wordsX
+  const wordsText = (text: string, cls: string, opacity: number) =>
+    `<text class="tx${cls ? ` ${cls}` : ''}" x="${layout.wordsX}" y="16" font-family="${FONT}" font-size="${BAND_WORDS_SIZE}" font-weight="600"${TABULAR}${opacity < 1 ? ` opacity="${opacity}"` : ''}>${xml(fitText(text, BAND_WORDS_SIZE, wordsRoom))}</text>`
   const percentLabel = (text: string, cls: string, opacity: number) =>
-    `<text class="m${cls ? ` ${cls}` : ''}" x="${W - CRAB_W - 6}" y="${H / 2 + 4.5}" text-anchor="end" font-family="${FONT}" font-size="12.5" style="font-variant-numeric:tabular-nums"${opacity < 1 ? ` opacity="${opacity}"` : ''}>${text}</text>`
-  // Inside the moving pill group the old label sits where the old pill's centre was at the start,
-  // clipped to the pill as it changes width so a longer old label never spills onto the track.
-  const pillRect = (cls: string, fill: string) =>
-    `<rect class="${cls}" x="${to.pillX}" width="${to.pillW}" height="${BAR_H}" rx="${BAR_H / 2}"${fill ? ` fill="${fill}"` : ''}/>`
-  const labels = isLabelTween
-    ? `<g clip-path="url(#pc)">${label(from.text, to.pillX + from.pillW / 2, 'xo', 0)}${label(to.text, to.pillX + to.pillW / 2, 'xi', 1)}</g>`
-    : label(to.text, to.pillX + to.pillW / 2, '', 1)
-  const percents = isPercentTween ? `${percentLabel(fromPercent, 'xo', 0)}${percentLabel(percent, 'xi', 1)}` : percentLabel(percent, '', 1)
-  const d = (period: number, offset = 0) => phase(at, period, offset)
+    `<text class="m${cls ? ` ${cls}` : ''}" x="${W}" y="16" text-anchor="end" font-family="${FONT}" font-size="${BAND_WORDS_SIZE}"${TABULAR}${opacity < 1 ? ` opacity="${opacity}"` : ''}>${text}</text>`
+  const wordsBody = isWordsTween ? `${wordsText(fromWords, 'xo', 0)}${wordsText(words, 'xi', 1)}` : wordsText(words, '', 1)
+  const percents = !layout.hasPercent ? '' : isPercentTween ? `${percentLabel(fromPercent, 'xo', 0)}${percentLabel(percent, 'xi', 1)}` : percentLabel(percent, '', 1)
+
   return `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">
 <style>
-.tx{fill:#2d1b3d}.m{fill:#8a7f95}.k{fill:#efe8e0}
+.tx{fill:#2d1b3d}.m{fill:#74687f}.k{fill:#efe8e0}
 @media (prefers-color-scheme: dark){.tx{fill:#f7f3ee}.m{fill:#a89cb4}.k{fill:#2a1e38}}
-.t0,.t1,.t2,.t3{animation:tw 2.2s ease-in-out infinite ${d(2.2)}}
-.t1{animation-duration:2.8s;animation-delay:${d(2.8, 0.7)}}.t2{animation-duration:1.9s;animation-delay:${d(1.9, 1.3)}}.t3{animation-duration:3.3s;animation-delay:${d(3.3, 0.4)}}
-@keyframes tw{0%,100%{opacity:1}50%{opacity:${p.isFinished ? 0.8 : 0.35}}}
+.sh{transform-box:fill-box;animation:sh 2.4s linear infinite ${phase(at, 2.4)}}@keyframes sh{from{transform:translateX(-100%)}to{transform:translateX(100%)}}
 ${tweens}
-@media (prefers-reduced-motion: reduce){.t0,.t1,.t2,.t3,.rv,.pl,.pw,.fj,.dt,.xo,.xi{animation:none}}
+@media (prefers-reduced-motion: reduce){.rv,.fj,.xo,.xi,.sh{animation:none}.sh{display:none}}
 </style>
-<defs><clipPath id="c"><rect width="${BAR_W}" height="${BAR_H}" rx="${BAR_H / 2}"/></clipPath>
-<clipPath id="r"><rect class="rv" width="${fillW}" height="${BAR_H}"/></clipPath>
-<linearGradient id="g" gradientUnits="userSpaceOnUse" x1="0" y1="0" x2="${BAR_W}" y2="0"><stop offset="0" stop-color="${CORAL}"/><stop offset=".5" stop-color="${ROSE}"/><stop offset="1" stop-color="${JADE}"/></linearGradient>
-<mask id="m" maskUnits="userSpaceOnUse" x="0" y="0" width="${BAR_W}" height="${BAR_H}">${mask}</mask>${isLabelTween ? `<clipPath id="pc">${pillRect('pw', '')}</clipPath>` : ''}</defs>
-<circle class="dt" cx="5" cy="${H / 2}" r="4" fill="${dot}"/>
-<text class="tx" x="16" y="${H / 2 + 5}" font-family="${FONT}" font-size="13" font-weight="600">${title}</text>
-<g transform="translate(${BAR_X},${(H - BAR_H) / 2})">
-<rect class="k" width="${BAR_W}" height="${BAR_H}" rx="${BAR_H / 2}"/>
-<g clip-path="url(#c)"><g clip-path="url(#r)">${fillRects}</g></g>
-<g class="pl">${pillRect('pw', pillColor)}
-${labels}</g>
-</g>
+<defs><clipPath id="r"><rect class="rv" width="${fillW}" height="${TRACK_H}" rx="${TRACK_H / 2}"/></clipPath>
+<linearGradient id="g" gradientUnits="userSpaceOnUse" x1="0" y1="0" x2="${trackW}" y2="0"><stop offset="0" stop-color="${CORAL}"/><stop offset=".5" stop-color="${ROSE}"/><stop offset="1" stop-color="${JADE}"/></linearGradient>
+${SHEEN_GRADIENT}</defs>
+${crabCss(at)}${crab(0, 2, 'pride', isRunning, BAND_CRAB_SCALE)}
+<text class="tx" x="${BAND_CRAB_W + 6}" y="16.5" font-family="${FONT}" font-size="${BAND_TITLE_SIZE}" font-weight="600">${BAND_TITLE}</text>
+${track}
+${wordsBody}
 ${percents}
-${crabCss(at)}${crab(W - CRAB_W + 1, 0, 'pride', running > 0, 0.8)}
 </svg>`
 }
 
@@ -476,12 +466,13 @@ const FAIL_INK = '#9e472c'
 const roleRules = (fills: Record<Role, string>, inks: Record<Role, string>): string =>
   ROLES.map(role => `.f-${role}{fill:${fills[role]}}.t-${role}{fill:${inks[role]}}`).join('')
 
+// `.m` is muted text on the pane; `.mk` is muted text on a `.k` tile, a step darker so it keeps 4.5:1 there.
 const paneCss = (at: number): string => `<style>
-.tx{fill:rgb(${TEXT_LIGHT})}.s{fill:rgba(${TEXT_LIGHT},.68)}.m{fill:rgba(${TEXT_LIGHT},.63)}.k{fill:rgba(${TEXT_LIGHT},.08)}.ln{stroke:rgba(${TEXT_LIGHT},.10)}
+.tx{fill:rgb(${TEXT_LIGHT})}.s{fill:rgba(${TEXT_LIGHT},.68)}.m{fill:rgba(${TEXT_LIGHT},.63)}.mk{fill:rgba(${TEXT_LIGHT},.7)}.k{fill:rgba(${TEXT_LIGHT},.08)}.ln{stroke:rgba(${TEXT_LIGHT},.10)}
 .ck{stroke:${JADE}}.xm{stroke:${CORAL}}.xmf{fill:${CORAL}}.cdone{fill:${mix(JADE, PANE_LIGHT, 0.2)}}.cfail{fill:${mix(FAIL_INK, PANE_LIGHT, 0.3)}}.t-fail{fill:${FAIL_INK}}
 .cd{opacity:.8}.cx{fill:${FAIL_INK};opacity:.55}
 ${roleRules(ROLE_FILL, ROLE_INK)}
-@media (prefers-color-scheme: dark){.tx{fill:rgb(${TEXT_DARK})}.s{fill:rgba(${TEXT_DARK},.65)}.m{fill:rgba(${TEXT_DARK},.49)}.k{fill:rgba(255,255,255,.08)}.ln{stroke:rgba(255,255,255,.07)}
+@media (prefers-color-scheme: dark){.tx{fill:rgb(${TEXT_DARK})}.s{fill:rgba(${TEXT_DARK},.65)}.m{fill:rgba(${TEXT_DARK},.49)}.mk{fill:rgba(${TEXT_DARK},.58)}.k{fill:rgba(255,255,255,.08)}.ln{stroke:rgba(255,255,255,.07)}
 .ck{stroke:${JADE_SOFT}}.xm{stroke:#f0907a}.cdone{fill:${mix(JADE_SOFT, PANE_DARK, 0.5)}}.cfail{fill:${mix(CORAL, PANE_DARK, 0.5)}}.t-fail{fill:#f0907a}
 .cd{opacity:.6}.cx{fill:${CORAL};opacity:.55}
 ${roleRules(ROLE_FILL_DARK, ROLE_INK_DARK)}}
@@ -491,15 +482,19 @@ ${roleRules(ROLE_FILL_DARK, ROLE_INK_DARK)}}
 @media (prefers-reduced-motion: reduce){.live,.sh{animation:none}.sh{display:none}.cap .cb{transition:none}}
 </style>`
 
-const SHEEN_DEF = '<defs><linearGradient id="sheen" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#fff" stop-opacity="0"/><stop offset=".5" stop-color="#fff" stop-opacity=".55"/><stop offset="1" stop-color="#fff" stop-opacity="0"/></linearGradient></defs>'
-
 // `at` is the clock at draw time: the loops start at its phase.
 const svg = (W: number, h: number, body: string, at: number): string =>
-  `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${h}" viewBox="0 0 ${W} ${h}">${paneCss(at)}${crabCss(at)}${SHEEN_DEF}${body}</svg>`
+  `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${h}" viewBox="0 0 ${W} ${h}">${paneCss(at)}${crabCss(at)}<defs>${SHEEN_GRADIENT}</defs>${body}</svg>`
 
 const textAt = (x: number, y: number, cls: string, size: number, content: string, extra = ''): string =>
   `<text class="${cls}" x="${x}" y="${y}" font-family="${FONT}" font-size="${size}"${extra}>${xml(content)}</text>`
 const TABULAR = ' style="font-variant-numeric:tabular-nums"'
+// Uppercase section and tile labels: 10 px, tracked out.
+const LABEL_SIZE = 10
+const LABEL_TRACKING = 0.08
+const LABEL_STYLE = ` style="letter-spacing:${LABEL_TRACKING}em"`
+const labelWidth = (label: string): number => textWidth(label, LABEL_SIZE) + [...label].length * LABEL_TRACKING * LABEL_SIZE
+const round1 = (value: number): number => Math.round(value * 10) / 10
 
 const checkMark = (x: number, y: number): string =>
   `<path class="ck" d="M${x - 5} ${y}l3.5 3.5 6.5-7" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>`
@@ -546,7 +541,7 @@ export const hiddenRunsText = (hidden: number): string => (hidden ? `+${hidden} 
 const timeline = (list: AgentRun[], at: number, top: number, width: number, laneH: number, isFull: boolean): Timeline => {
   const runs = list.slice(-TIMELINE_RUNS)
   if (!runs.length) return { body: '', height: 0, span: 0, hidden: 0 }
-  const laneGap = isFull ? 3 : 2
+  const laneGap = isFull ? 4 : 2
   const { placed, lanes } = packLanes(runs, at)
   const origin = Math.min(...runs.map(run => run.startedAt))
   const span = Math.max(1, Math.max(...placed.map(item => item.end)) - origin)
@@ -555,7 +550,7 @@ const timeline = (list: AgentRun[], at: number, top: number, width: number, lane
     .filter(item => !(isFull && item.isOverflow))
     .map(({ run, lane, end }, index) => {
       const role = roleOf(run.type)
-      const capsuleW = Math.max(4, ((end - run.startedAt) / span) * width)
+      const capsuleW = Math.max(laneH, ((end - run.startedAt) / span) * width)
       const x = Math.min(width - capsuleW, ((run.startedAt - origin) / span) * width)
       const y = top + lane * (laneH + laneGap)
       const box = `x="${x.toFixed(1)}" y="${y}" width="${capsuleW.toFixed(1)}" height="${laneH}" rx="${radius}"`
@@ -574,14 +569,15 @@ const timeline = (list: AgentRun[], at: number, top: number, width: number, lane
   const lanesH = lanes * (laneH + laneGap) - laneGap
   if (!isFull) return { body: capsules, height: lanesH, span, hidden: 0 }
   const hidden = list.length - runs.length + placed.filter(item => item.isOverflow).length
-  const axisY = top + lanesH + 5.5
+  // The axis: a hairline, the start at the left and any runs left out in the middle. The span sits on the label row above.
+  const axisY = top + lanesH + 8.5
   const more = hidden ? textAt(width / 2, axisY + 13, 's', 10, hiddenRunsText(hidden), `${TABULAR} text-anchor="middle" font-weight="600"`) : ''
-  const axis = `<line class="ln" x1="0" y1="${axisY}" x2="${width}" y2="${axisY}"/>${textAt(0, axisY + 13, 'm', 10, '0:00', TABULAR)}${more}${textAt(width, axisY + 13, 'm', 10, fmtTime(span), `${TABULAR} text-anchor="end"`)}`
-  return { body: capsules + axis, height: lanesH + 5.5 + 16, span, hidden }
+  const axis = `<line class="ln" x1="0" y1="${axisY}" x2="${width}" y2="${axisY}"/>${textAt(0, axisY + 13, 'm', 10, '0:00', TABULAR)}${more}`
+  return { body: capsules + axis, height: lanesH + 8.5 + 16, span, hidden }
 }
 
 // ---------------------------------------------------------------------------
-// The header: live state, totals, timeline.
+// The header: live state, three totals tiles, timeline.
 
 export type Drawing = { source: string; height: number }
 
@@ -589,76 +585,114 @@ export const statusPhrase = (list: AgentRun[]): string => {
   const working = list.filter(a => a.status === 'running').length
   const failed = list.filter(a => a.status === 'failed').length
   if (!list.length) return 'No agents yet'
-  if (working) return `${working} working`
-  return failed ? `All ${list.length} finished` : `All ${list.length} done`
+  if (working) return `${working} running`
+  return failed ? `Finished · ${failed} stopped` : 'All done'
 }
 
-const STAT_LABEL = 11
-const STAT_VALUE = 12.5
+// The header's right-hand count: how far the runs got while some work, how many ran once all finished.
+export const agentCountText = (list: AgentRun[]): string => {
+  const working = list.filter(a => a.status === 'running').length
+  if (working) return `${list.length - working} of ${list.length} done`
+  return `${list.length} ${list.length === 1 ? 'agent' : 'agents'}`
+}
+
+const STATUS_H = 24
+const TILE_TOP = 32
+const TILE_H = 56
+const TILE_GAP = 8
+const TILE_PAD = 12
+const TIMELINE_LABEL_Y = 113
+const LANES_TOP = 124
+const LANE_H = 8
+const HEADER_BOTTOM = 8
+
+// The largest size from `preferred` down to 11 at which `value` fits `room`: a narrow tile shrinks its number before cutting it.
+const fittedValue = (value: string, preferred: number, room: number): { text: string; size: number } => {
+  for (let size = preferred; size >= 11; size -= 1) if (textWidth(value, size) <= room) return { text: value, size }
+  return { text: fitText(value, 11, room), size: 11 }
+}
 
 export const headerSvg = (W: number, list: AgentRun[], at: number, clockAt: number): Drawing & { hidden: number } => {
   const sums = totals(list, at)
   const working = list.filter(a => a.status === 'running').length
   const failed = list.filter(a => a.status === 'failed').length
-  const mark = working
-    ? `<circle class="live" cx="6" cy="15" r="4" fill="${CORAL}"/>`
-    : list.length
-      ? checkMark(7, 15)
-      : `<circle class="k" cx="6" cy="15" r="4"/>`
-  const stopped = !working && failed
-    ? `<tspan class="t-fail" dx="8" font-family="${FONT}" font-size="11.5" font-weight="600">${failed} stopped</tspan>`
-    : ''
-  const status = `${mark}<text class="tx" x="18" y="20" font-family="${FONT}" font-size="13.5" font-weight="600">${xml(statusPhrase(list))}${stopped}</text>
-<text x="${W}" y="22" text-anchor="end"><tspan class="m" font-family="${FONT}" font-size="11">active</tspan><tspan class="tx" dx="6" font-family="${FONT}" font-size="17" font-weight="600"${TABULAR}>${fmtTime(sums.time)}</tspan></text>`
-  if (!list.length) return { source: svg(W, 30, status, clockAt), height: 30, hidden: 0 }
 
-  // The stats row: the first layout that fits, from the fullest to the most compact.
-  const doneCount = list.length - working
-  const agentValues = working ? [`${doneCount} of ${list.length} done`, `${doneCount}/${list.length} done`, `${doneCount}/${list.length}`] : [`${list.length}`]
-  const pairsOf = (agents: string, hasTokens: boolean): [string, string][] => [
+  // Status line: the mark, the state in words, and the count at the right edge.
+  const mark = working
+    ? `<circle class="live" cx="6" cy="10" r="4" fill="${CORAL}"/>`
+    : !list.length
+      ? `<circle class="k" cx="6" cy="10" r="4"/>`
+      : failed
+        ? crossMark(6, 10)
+        : checkMark(7, 10)
+  const count = list.length ? agentCountText(list) : ''
+  const countW = count ? textWidth(count, 11) + 12 : 0
+  const status = `${mark}${textAt(18, 15, 'tx', 14, fitText(statusPhrase(list), 14, W - 18 - countW), ' font-weight="600"')}${
+    count ? textAt(W, 14.5, 'm', 11, count, `${TABULAR} text-anchor="end"`) : ''
+  }`
+  if (!list.length) return { source: svg(W, STATUS_H, status, clockAt), height: STATUS_H, hidden: 0 }
+
+  // Three tiles in one row: active time, cost, tokens.
+  const tileW = (W - TILE_GAP * 2) / 3
+  const valueSize = tileW < 84 ? 15 : 16
+  const kpis: [string, string][] = [
+    ['ACTIVE', fmtTime(sums.time)],
     // With every run unpriced there is no estimate to show.
-    sums.unpriced === list.length ? ['cost', 'price unknown'] : ['cost', '≈' + fmtCost(sums.cost)],
-    ...(hasTokens ? ([['tokens', fmtTokens(sums.tokens)]] as [string, string][]) : []),
-    ['agents', agents],
+    ['COST', sums.unpriced === list.length ? 'unknown' : '≈' + fmtCost(sums.cost)],
+    ['TOKENS', fmtTokens(sums.tokens)],
   ]
-  const shortest = agentValues[agentValues.length - 1] ?? ''
-  const layouts: { pairs: [string, string][]; gap: number }[] = [
-    ...agentValues.map(agents => ({ pairs: pairsOf(agents, true), gap: 25 })),
-    { pairs: pairsOf(shortest, false), gap: 25 },
-    { pairs: pairsOf(shortest, false), gap: 16 },
-  ]
-  const widthOf = ({ pairs, gap }: { pairs: [string, string][]; gap: number }) =>
-    pairs.reduce((sum, [label, value]) => sum + textWidth(label, STAT_LABEL) + 5 + textWidth(value, STAT_VALUE), 0) + gap * (pairs.length - 1)
-  const layout = layouts.find(candidate => widthOf(candidate) <= W) ?? layouts[layouts.length - 1] ?? layouts[0]!
-  let cursor = 0
-  const stats = layout.pairs
+  const tiles = kpis
     .map(([label, value], index) => {
-      const labelW = textWidth(label, STAT_LABEL)
-      const divider = index ? `<line class="ln" x1="${cursor - layout.gap / 2}" y1="40" x2="${cursor - layout.gap / 2}" y2="53"/>` : ''
-      const pair = `${divider}${textAt(cursor, 51, 'm', STAT_LABEL, label)}${textAt(cursor + labelW + 5, 51, 'tx', STAT_VALUE, value, `${TABULAR} font-weight="600"`)}`
-      cursor += labelW + 5 + textWidth(value, STAT_VALUE) + layout.gap
-      return pair
+      const tileX = round1(index * (tileW + TILE_GAP))
+      const room = tileW - TILE_PAD * 2
+      const fitted = fittedValue(value, valueSize, room)
+      const labelText = labelWidth(label) <= room ? label : fitText(label, LABEL_SIZE * (1 + LABEL_TRACKING / 0.6), room)
+      return `<rect class="k" x="${tileX}" y="${TILE_TOP}" width="${round1(tileW)}" height="${TILE_H}" rx="10"/>${textAt(round1(tileX + TILE_PAD), TILE_TOP + 20, 'mk', LABEL_SIZE, labelText, LABEL_STYLE)}${textAt(
+        round1(tileX + TILE_PAD),
+        TILE_TOP + 42,
+        'tx',
+        fitted.size,
+        fitted.text,
+        `${TABULAR} font-weight="600"`,
+      )}`
     })
     .join('')
-  const lanes = timeline(list, at, 68, W, 6, true)
-  const height = 68 + lanes.height
-  return { source: svg(W, height, `${status}${stats}${lanes.body}`, clockAt), height, hidden: lanes.hidden }
+
+  // Timeline: a label row with the wall span at the right, then the lanes and the axis.
+  const lanes = timeline(list, at, LANES_TOP, W, LANE_H, true)
+  const timelineLabel = `${textAt(0, TIMELINE_LABEL_Y, 'm', LABEL_SIZE, 'TIMELINE', LABEL_STYLE)}${textAt(W, TIMELINE_LABEL_Y, 'm', 11, `${fmtTime(lanes.span)} total`, `${TABULAR} text-anchor="end"`)}`
+  const height = Math.ceil(LANES_TOP + lanes.height + HEADER_BOTTOM)
+  return { source: svg(W, height, `${status}${tiles}${timelineLabel}${lanes.body}`, clockAt), height, hidden: lanes.hidden }
 }
 
 // ---------------------------------------------------------------------------
-// One row per run: crab in its tile, what it does, its type and model, aligned metrics, context.
+// One row per run: the crab in its tile, then three lines in one text column. Right columns end at W.
 
-export const ROW_H = 70
-const ROW_X = 52
-const BAR_Y = 61
+export const ROW_H = 76
+export const ROW_X = 44
+const AVATAR_Y = 12
+const AVATAR_SIZE = 32
+const LINE1_Y = 26
+const LINE2_Y = 44
+const LINE3_Y = 62
+const CHIP_Y = 32
+const CHIP_H = 16
+const CHIP_SIZE = 10
+const CHIP_PAD = 7
+const METER_H = 4
+const METER_Y = 56
 
 const chip = (x: number, y: number, label: string, fillClass: string, inkClass: string): { body: string; width: number } => {
-  const width = Math.round(textWidth(label, 10.5) + 14)
+  const width = Math.round(textWidth(label, CHIP_SIZE) + CHIP_PAD * 2)
   return {
-    body: `<rect class="${fillClass}" x="${x}" y="${y}" width="${width}" height="17" rx="8.5" fill-opacity=".14"/>${textAt(x + 7, y + 12.2, inkClass, 10.5, label, ' font-weight="600"')}`,
+    body: `<rect class="${fillClass}" x="${x}" y="${y}" width="${width}" height="${CHIP_H}" rx="${CHIP_H / 2}" fill-opacity=".14"/>${textAt(x + CHIP_PAD, y + 11.5, inkClass, CHIP_SIZE, label, ' font-weight="600"')}`,
     width,
   }
 }
+
+// The crab's home: a tile in its role colour, the crab centred in it.
+const avatar = (y: number, role: Role, isWalking: boolean): string =>
+  `<rect class="f-${role}" x="0" y="${y}" width="${AVATAR_SIZE}" height="${AVATAR_SIZE}" rx="9" fill-opacity=".14"/>${crab(4, y + 5, role, isWalking, 0.8)}`
 
 // `at` times the run (the pane's ticking clock); `clockAt` is the clock now, for motion.
 // A settled run is drawn with `clockAt` 0, so its row stays the same image from tick to tick.
@@ -666,56 +700,60 @@ export const agentSvg = (W: number, a: AgentRun, at: number, clockAt: number, is
   const role = roleOf(a.type)
   const isRunning = a.status === 'running'
   const isFailed = a.status === 'failed'
+  const isWide = W >= 420
 
-  // Line 1: what it does, then its status and time at the right.
+  // Line 1: what it does, then its status mark and time ending at W.
   const time = fmtTime(elapsed(a, at))
-  const timeW = textWidth(time, 12)
-  const markX = W - timeW - 17
-  const line1 = `${textAt(ROW_X, 20, 'tx', 13, fitText(a.description || a.type, 13, markX - ROW_X - 14), ' font-weight="600"')}
-${statusMark(markX, 15.5, a)}${textAt(W, 20, isRunning ? 'tx' : 'm', 12, time, `${TABULAR} text-anchor="end" font-weight="600"`)}`
+  const markX = W - textWidth(time, 12) - 11
+  const titleRoom = markX - 15 - ROW_X
+  const line1 = `${textAt(ROW_X, LINE1_Y, 'tx', 13, fitText(a.description || a.type, 13, titleRoom), ' font-weight="600"')}${statusMark(markX, LINE1_Y - 4.5, a)}${textAt(
+    W,
+    LINE1_Y,
+    isRunning ? 'tx' : 'm',
+    12,
+    time,
+    `${TABULAR} text-anchor="end"${isRunning ? ' font-weight="600"' : ''}`,
+  )}`
 
-  // Line 2: the type chip, the model when one is known, and a chip saying why a failed run stopped.
-  const typeChip = chip(ROW_X, 27, fitText(a.type, 10.5, (W - ROW_X) * 0.5), `f-${role}`, `t-${role}`)
-  const stopLabel = isFailed ? fitText(runStopLabel(a), 10.5, Math.max(60, (W - ROW_X) * 0.45)) : ''
-  const stopW = isFailed ? chip(0, 27, stopLabel, 'xmf', 't-fail').width + 8 : 0
-  const modelX = ROW_X + typeChip.width + 8
-  const model = fitText(runModel(a), 11, W - modelX - stopW)
-  const stopX = model ? modelX + textWidth(model, 11) + 8 : modelX
-  const stopChip = isFailed ? chip(stopX, 27, stopLabel, 'xmf', 't-fail').body : ''
-  const line2 = `${typeChip.body}${model ? textAt(modelX, 39, 's', 11, model) : ''}${stopChip}`
+  // Line 2: the type chip, a chip saying why a failed run stopped, and the model in the room left.
+  const columnW = W - ROW_X
+  const typeChip = chip(ROW_X, CHIP_Y, fitText(a.type, CHIP_SIZE, columnW * 0.5 - CHIP_PAD * 2), `f-${role}`, `t-${role}`)
+  const stopX = ROW_X + typeChip.width + 6
+  const stopChip = isFailed ? chip(stopX, CHIP_Y, fitText(runStopLabel(a), CHIP_SIZE, W - stopX - CHIP_PAD * 2), 'xmf', 't-fail') : null
+  const modelX = (stopChip ? stopX + stopChip.width : ROW_X + typeChip.width) + 8
+  const modelRoom = W - modelX
+  // Beside a stop chip the model shows whole (with its effort, or without it) or not at all; elsewhere it is fitted.
+  const modelText = stopChip
+    ? ([runModel(a), modelName(a.model)].find(text => text && textWidth(text, 11) <= modelRoom) ?? '')
+    : runModel(a)
+  const isModelShown = Boolean(modelText) && modelRoom >= Math.min(48, textWidth(modelText, 11))
+  const line2 = `${typeChip.body}${stopChip ? stopChip.body : ''}${isModelShown ? textAt(modelX, LINE2_Y, 's', 11, fitText(modelText, 11, modelRoom)) : ''}`
 
-  // Line 3: metrics in fixed columns, so values line up down the panel. A narrow panel keeps ctx and cost.
-  const isNarrow = W - ROW_X < 230
-  const metrics: [string, string][] = [
-    ['ctx', `${ctxOf(a)}%`],
-    ...(isNarrow ? [] : ([['tokens', fmtTokens(a.tokens)]] as [string, string][])),
-    a.isPriceUnknown ? ['price', 'unknown'] : ['cost', '≈' + fmtCost(a.costUsd)],
-    ...(W >= 400 ? ([['steps', String(a.steps)]] as [string, string][]) : []),
+  // Line 3: tokens and cost at the left; the context meter, "ctx" and its percent at the right, the percent ending at W.
+  const meterW = isWide ? 72 : W >= 300 ? 40 : 32
+  const ctxSlot = textWidth('ctx 100%', 11)
+  const meterX = round1(W - ctxSlot - 6 - meterW)
+  const metricParts = [
+    `${fmtTokens(a.tokens)} tok`,
+    a.isPriceUnknown ? 'price unknown' : '≈' + fmtCost(a.costUsd),
+    ...(isWide ? [`${a.steps} ${a.steps === 1 ? 'step' : 'steps'}`] : []),
   ]
-  const columnW = Math.min(110, (W - ROW_X) / metrics.length)
-  const line3 = metrics
-    .map(([label, value], index) => {
-      const x = ROW_X + index * columnW
-      return `${textAt(x, 55, 'm', 10.5, label)}${textAt(x + textWidth(label, 10.5) + 5, 55, 's', 11, value, `${TABULAR} font-weight="600"`)}`
-    })
-    .join('')
+  const metrics = textAt(ROW_X, LINE3_Y, 's', 11, fitText(metricParts.join(' · '), 11, meterX - 8 - ROW_X), TABULAR)
+  const ctxText = `${textAt(round1(W - ctxSlot), LINE3_Y, 'm', 11, 'ctx')}${textAt(W, LINE3_Y, 'm', 11, `${ctxOf(a)}%`, `${TABULAR} text-anchor="end"`)}`
 
-  // Context bar: live fill in the role colour; a finished run keeps its last fill in a quiet tone.
-  const barW = W - ROW_X
-  const fillW = Math.round((barW * ctxTarget(a)) / 100)
+  // Context meter: live fill in the role colour; a finished run keeps its last fill in a quiet tone.
+  const fillW = round1((meterW * ctxTarget(a)) / 100)
   const fillClass = isRunning ? `f-${role}` : isFailed ? 'cfail' : 'cdone'
   // The fill tweens from where it stood; a run that just finished also fades from its role colour.
   const isTweening = a.ctxFrom !== undefined && isTweenAt(a.ctxAt, clockAt)
   const tween = isTweening
-    ? `<style>@media (prefers-reduced-motion: no-preference){${tweenCss('cf', `width:${Math.round((barW * Math.min(100, Math.max(0, a.ctxFrom ?? 0))) / 100)}px${isRunning ? '' : `;fill:${ROLE_FILL[role]}`}`, -Math.round(clockAt - (a.ctxAt ?? clockAt)))}}</style>`
+    ? `<style>@media (prefers-reduced-motion: no-preference){${tweenCss('cf', `width:${round1((meterW * Math.min(100, Math.max(0, a.ctxFrom ?? 0))) / 100)}px${isRunning ? '' : `;fill:${ROLE_FILL[role]}`}`, -Math.round(clockAt - (a.ctxAt ?? clockAt)))}}</style>`
     : ''
-  const bar = `<rect class="k" x="${ROW_X}" y="${BAR_Y}" width="${barW}" height="3" rx="1.5"/><rect class="${isTweening ? 'cf ' : ''}${fillClass}" x="${ROW_X}" y="${BAR_Y}" width="${fillW}" height="3" rx="1.5"/>${tween}`
+  const meter = `<rect class="k" x="${meterX}" y="${METER_Y}" width="${meterW}" height="${METER_H}" rx="${METER_H / 2}"/><rect class="${isTweening ? 'cf ' : ''}${fillClass}" x="${meterX}" y="${METER_Y}" width="${fillW}" height="${METER_H}" rx="${METER_H / 2}"/>${tween}`
 
-  // The crab's home: a tile in its role colour.
-  const tile = `<rect class="f-${role}" x="0" y="10" width="40" height="40" rx="12" fill-opacity=".14"/>${crab(5, 16, role, isRunning, 1)}`
   const hairline = isLast ? '' : `<line class="ln" x1="0" y1="${ROW_H - 0.5}" x2="${W}" y2="${ROW_H - 0.5}"/>`
 
-  return svg(W, ROW_H, `${tile}${line1}${line2}${line3}${bar}${hairline}`, clockAt)
+  return svg(W, ROW_H, `${avatar(AVATAR_Y, role, isRunning)}${line1}${line2}${metrics}${meter}${ctxText}${hairline}`, clockAt)
 }
 
 // ---------------------------------------------------------------------------
@@ -739,35 +777,40 @@ export const emptySvg = (W: number, clockAt: number): string =>
   svg(
     W,
     emptyHeight(W),
-    `<rect class="f-pride" x="0" y="6" width="40" height="40" rx="12" fill-opacity=".14"/>${crab(5, 12, 'pride', false, 1)}
-${textAt(ROW_X, 23, 'tx', 13, fitText('No subagents yet', 13, W - ROW_X), ' font-weight="600"')}
+    `${avatar(8, 'pride', false)}
+${textAt(ROW_X, 22, 'tx', 13, fitText('No subagents yet', 13, W - ROW_X), ' font-weight="600"')}
 ${emptyLines(W)
   .map((line, index) => textAt(ROW_X, 40 + index * 16, 's', 12, fitText(line, 12, W - ROW_X)))
   .join('')}`,
     clockAt,
   )
 
+const COMPACT_STRIDE = 36
+const COMPACT_LANES_TOP = 48
+
 export const compactSvg = (W: number, list: AgentRun[], at: number, clockAt: number): Drawing => {
   const sums = totals(list, at)
   const cost = sums.unpriced === list.length ? 'price unknown' : `≈${fmtCost(sums.cost)}`
   const summary = `${cost} · ${fmtTokens(sums.tokens)} · ${fmtTime(sums.time)} active`
+  // The totals keep room for one crab and its "+N"; a narrow pane cuts them short.
+  const summaryW = Math.min(textWidth(summary, 11), W - COMPACT_STRIDE - 32)
   const ordered = [...list.filter(a => a.status === 'running'), ...list.filter(a => a.status !== 'running')]
-  const fit = Math.max(1, Math.floor((W - textWidth(summary, 12) - 40) / 34))
+  const fit = Math.max(1, Math.floor((W - summaryW - 40) / COMPACT_STRIDE))
   const shown = ordered.slice(0, fit)
   const more = ordered.length - shown.length
   const crabs = shown
     .map((a, index) => {
-      const x = index * 34
+      const x = index * COMPACT_STRIDE
       const dot =
         a.status === 'running'
-          ? `<circle class="live f-${roleOf(a.type)}" cx="${x + 15}" cy="35" r="2.2"/>`
-          : `<circle class="${a.status === 'done' ? 'cdone' : 'cfail'}" cx="${x + 15}" cy="35" r="2.2"/>`
-      return `${crab(x, 0, roleOf(a.type), a.status === 'running', 1)}${dot}`
+          ? `<circle class="live f-${roleOf(a.type)}" cx="${x + 15}" cy="36" r="2.2"/>`
+          : `<circle class="${a.status === 'done' ? 'cdone' : 'cfail'}" cx="${x + 15}" cy="36" r="2.2"/>`
+      return `${crab(x, 1, roleOf(a.type), a.status === 'running', 1)}${dot}`
     })
     .join('')
-  const overflow = more ? textAt(shown.length * 34 + 2, 20, 's', 12, `+${more}`, TABULAR) : ''
-  const totalsText = textAt(W, 20, 's', 12, summary, `${TABULAR} text-anchor="end"`)
-  const lanes = timeline(list, at, 46, W, 3, false)
-  const height = lanes.height ? 46 + lanes.height + 2 : 40
+  const overflow = more ? textAt(shown.length * COMPACT_STRIDE, 20, 's', 11, `+${more}`, TABULAR) : ''
+  const totalsText = textAt(W, 20, 's', 11, fitText(summary, 11, summaryW), `${TABULAR} text-anchor="end"`)
+  const lanes = timeline(list, at, COMPACT_LANES_TOP, W, 4, false)
+  const height = lanes.height ? COMPACT_LANES_TOP + lanes.height + 4 : 44
   return { source: svg(W, height, `${crabs}${overflow}${totalsText}${lanes.body}`, clockAt), height }
 }

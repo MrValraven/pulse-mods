@@ -11,7 +11,7 @@
       "name": "pulse-progress",
       "source": "./pulse-progress",
       "description": "A QueerPulse-coloured progress band above the prompt and a /pulse panel of subagents. It adds no tools and changes no prompts; /pulse mods checks GitHub for pulse-mods updates once a day.",
-      "version": "0.5.0",
+      "version": "0.6.0",
       "category": "mod"
     },
     {

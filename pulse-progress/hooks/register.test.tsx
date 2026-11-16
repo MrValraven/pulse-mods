@@ -67,7 +67,7 @@ for (const surface of ['terminal', 'desktop'] as const) {
     await after.press({ key: 'pulse-undo' })
     const restored = await $.ui.mount({ plugin: PLUGIN, surface, component: 'AbovePrompt', props: band })
     expect((await restored.find({ key: 'pulse-agents' }))?.props.label).toBe('Agents 1')
-    expect((await restored.find({ key: 'pulse-dismiss' }))?.props.label).toBe(surface === 'desktop' ? 'Clear finished runs' : 'Clear finished')
+    expect((await restored.find({ key: 'pulse-dismiss' }))?.props.label).toBe('Clear finished')
   })
 
   test(`${surface}: with nothing finished the close button reads Hide band`, async ($, on) => {
