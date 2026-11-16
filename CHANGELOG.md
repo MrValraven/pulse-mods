@@ -4,6 +4,7 @@ One section per release. Each release is tagged `<mod>-v<version>`.
 
 ## 2026-11-16
 
+- pulse-progress 0.6.0: a cleaner desktop look, with a slim band that fits its row, ACTIVE, COST and TOKENS tiles, RUNNING and FINISHED headings, and agent rows with a context meter.
 - pulse-filetree 0.7.1: room to breathe in the desktop pane, with the header, the search and its controls, the tree, the Outside this folder list and the footer each set apart.
 
 ## 2026-11-14

@@ -82,6 +82,16 @@ const VIEW_STORE_KEY = 'view'
 const UPDATE_CHECK_STORE_KEY = 'update-check-at'
 // The quiet update check waits this long after the session starts, so it never holds up the first prompt.
 const UPDATE_CHECK_DELAY_MS = 5000
+// The desktop band's width estimate: the row's columns in pixels, less the two buttons beside the drawing.
+const BAND_PX_PER_COLUMN = 8
+const BAND_BUTTON_PX_PER_CHAR = 7.5
+const BAND_BUTTON_PADDING_PX = 20
+// Two gaps: drawing to "Agents N", and "Agents N" to the dismiss button.
+const BAND_GAP_COUNT = 2
+const BAND_GAP_PX = 8
+const BAND_SAFETY_MARGIN_PX = 16
+const BAND_MIN_WIDTH_PX = 160
+const BAND_MAX_WIDTH_PX = 1600
 
 const messageOf = (cause: unknown): string => {
   const text = cause instanceof Error ? cause.message : String(cause)
@@ -330,7 +340,7 @@ export const register: Register = (on, options) => {
     return rows.length ? { suggestions: [...result.suggestions, ...rows] } : result
   })
 
-  // The person can close the pane with its own close mark: the band's "/pulse" hint comes back.
+  // The person can close the pane with its own close mark: the terminal band's "/pulse" hint comes back.
   on('ui.close', async ($, e, next) => {
     const result = await next(e)
     if (e.id === PANE) await update($, view, prev => ({ ...prev, isPaneOpen: false }))
@@ -494,7 +504,8 @@ export const register: Register = (on, options) => {
 
     if (e.surface === 'desktop' && 'Svg' in ui) {
       const { Svg } = ui
-      const W = Math.max(240, Math.min(900, (e.props.bodyColumns || 40) * 8 - 8))
+      // Sized to the slot's full width, so the drawings and the toolbar under them share one right edge.
+      const W = Math.max(200, Math.min(900, Math.round((e.props.bodyColumns || 40) * 8.2) - 4))
       if (list.length === 0) {
         return (
           <Box flexDirection="column">
@@ -503,17 +514,18 @@ export const register: Register = (on, options) => {
         )
       }
       const phrase = statusPhrase(list)
-      const viewToggle = (
-        <Button key="compact" label={currentView.isCompact ? 'Show detailed view' : 'Show compact view'} plain dimColor onPress={() => void flipCompact()} />
+      // The view toggle lives in one toolbar row right under the drawing at the top, in both views.
+      const toolbar = (
+        <Box key="toolbar" flexDirection="row" justifyContent="flex-start" gap={2}>
+          <Button key="compact" label={currentView.isCompact ? 'Detailed view' : 'Compact view'} plain dimColor onPress={() => void flipCompact()} />
+        </Box>
       )
       if (currentView.isCompact) {
         const compact = compactSvg(W, list, at, clockAt)
         return (
           <Box flexDirection="column">
             <Svg key="overview" source={compact.source} alt={`${phrase}. ${summary}, timeline of ${list.length} runs`} width={W} height={compact.height} />
-            <Box key="controls" flexDirection="row" justifyContent="flex-end" marginTop={1}>
-              {viewToggle}
-            </Box>
+            {toolbar}
           </Box>
         )
       }
@@ -545,6 +557,7 @@ export const register: Register = (on, options) => {
             height={header.height}
             isInteractive={running.length === 0}
           />
+          {toolbar}
           {note ? (
             <Text mono dimColor>
               {note}, left out of the cost
@@ -552,23 +565,23 @@ export const register: Register = (on, options) => {
           ) : null}
           {running.length > 0 && (
             <Text mono dimColor>
-              Hover the timeline for names once every run has finished
+              Timeline names show on hover once every run finishes
             </Text>
           )}
           {running.length > 0 && (
-            <Box key="working" flexDirection="row" justifyContent="space-between" alignItems="center" marginTop={1}>
-              <Text mono dimColor>Working · {running.length}</Text>
-              {viewToggle}
+            <Box key="working" flexDirection="row" alignItems="center" marginTop={1}>
+              <Text mono dimColor>
+                {`RUNNING · ${running.length}`}
+              </Text>
             </Box>
           )}
           {running.map(rowOf)}
           {finished.length > 0 && (
             <Box key="finished" flexDirection="row" justifyContent="space-between" alignItems="center" marginTop={1}>
-              <Text mono dimColor>Finished · {finished.length}</Text>
-              <Box flexDirection="row" gap={2}>
-                {running.length === 0 && viewToggle}
-                {doneToggle}
-              </Box>
+              <Text mono dimColor>
+                {`FINISHED · ${finished.length}`}
+              </Text>
+              {doneToggle}
             </Box>
           )}
           {!currentView.isDoneCollapsed && finished.map(rowOf)}
@@ -644,7 +657,7 @@ export const register: Register = (on, options) => {
     const held = await read($, cleared)
     // Subscribes to the tick. The surface rebuilds the band's image each second while the pane's
     // clock runs, and a rebuilt image starts its loops at the phase baked into its source: drawn
-    // fresh each tick, that phase is the clock's, so the twinkle and the crab carry on unbroken.
+    // fresh each tick, that phase is the clock's, so the sheen and the crab carry on unbroken.
     await read($, now)
     const isBandShown = barState.total > 0 && !currentView.isBandHidden
     if ((!isBandShown && !held) || e.props.hasSurvey) return next(e)
@@ -672,10 +685,11 @@ export const register: Register = (on, options) => {
       hasFinished ? 'Clear finished' : 'Hide band',
       hasFinished ? 'Clear' : 'Hide',
     )
+    const desktopDismissLabel = hasFinished ? 'Clear finished' : 'Hide band'
     const dismiss = (
       <Button
         key="pulse-dismiss"
-        label={isDesktop ? (hasFinished ? 'Clear finished runs' : 'Hide band') : layout.dismissLabel}
+        label={isDesktop ? desktopDismissLabel : layout.dismissLabel}
         plain
         role="dismiss"
         onPress={() => void clearFinished($)}
@@ -693,7 +707,16 @@ export const register: Register = (on, options) => {
 
     if (isDesktop && 'Svg' in ui) {
       const { Svg } = ui
-      const width = Math.max(180, Math.min(1600, (e.props.bodyColumns || 100) * 8 - 96 - (isHintWanted ? 56 : 0)))
+      // The drawing takes what the row's two buttons leave, so the dismiss button never runs past the edge.
+      const columnsPx = (e.props.bodyColumns || 100) * BAND_PX_PER_COLUMN
+      const buttonWidthOf = (label: string) => label.length * BAND_BUTTON_PX_PER_CHAR + BAND_BUTTON_PADDING_PX
+      const buttonsWidth = buttonWidthOf(crewLabel) + buttonWidthOf(desktopDismissLabel)
+      const width = Math.round(
+        Math.max(
+          BAND_MIN_WIDTH_PX,
+          Math.min(BAND_MAX_WIDTH_PX, columnsPx - buttonsWidth - BAND_GAP_COUNT * BAND_GAP_PX - BAND_SAFETY_MARGIN_PX),
+        ),
+      )
       const at = await $.clock.now()
       return (
         <Box flexDirection="column">
@@ -701,11 +724,6 @@ export const register: Register = (on, options) => {
             <Box flexDirection="row" alignItems="center" gap={1}>
               <Svg key="pulse-band" source={bandSvg(barState, width, at)} alt={`Pulse: ${counts.done} of ${counts.total} subagents finished. ${words}`} width={width} height={BAND_H} />
               {crewButton}
-              {isHintWanted && (
-                <Text mono dimColor>
-                  /pulse
-                </Text>
-              )}
               {dismiss}
             </Box>
           )}
