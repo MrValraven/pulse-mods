@@ -1705,6 +1705,10 @@ export const register: Register = (on, options) => {
       return text.length <= room ? <Text mono color={palette.muted}>{`${text} `}</Text> : null
     }
     const divider = (columns: number) => <Text mono color={palette.faint} wrap="truncate-end">{'─'.repeat(Math.max(1, columns))}</Text>
+    // The space between the pane's zones (header, search and controls, tree, outside list,
+    // footer) as a step the desktop sizes on its own scale. The terminal spends every row on
+    // content, so there each step is zero.
+    const desktopStep = (step: 'xs' | 'sm' | 'md' | 'lg') => (isDesktop ? step : 0)
     if (t.preview) {
       if (previewed?.path !== t.preview) await loadPreview($, t.preview)
       const p = previewed
@@ -2124,8 +2128,8 @@ export const register: Register = (on, options) => {
     // read and a thick one for a write; a subagent's are lilac, dashed and say so.
     const outsideGroup =
       outsideList.length === 0 ? null : (
-        <Box flexDirection="column">
-          <Box flexDirection="row" height={1}>
+        <Box flexDirection="column" marginTop={desktopStep('lg')}>
+          <Box flexDirection="row" height={1} alignItems="center" marginBottom={desktopStep('xs')}>
             <Text mono bold color={palette.muted}>
               Outside this folder
             </Text>
@@ -2168,7 +2172,7 @@ export const register: Register = (on, options) => {
       </Box>
     )
     const desktopControls = (
-      <Box flexDirection="row" flexWrap="wrap" alignItems="center" columnGap={2}>
+      <Box flexDirection="row" flexWrap="wrap" alignItems="center" columnGap={2} rowGap="xs">
         {desktopButtonGroup('navigation', [upButton, reloadButton])}
         <Box key="spacer" flexGrow={1} />
         {desktopButtonGroup('view', viewButtons)}
@@ -2220,38 +2224,45 @@ export const register: Register = (on, options) => {
 
     return (
       <Box flexDirection="column" minHeight={Math.max(1, e.props.scroll?.bodyRows ?? 1)} backgroundColor={theme.bg || undefined}>
-        <Box flexDirection="row">
-          <Box flexDirection="row" flexShrink={1} overflow="hidden">
-            <Text mono bold color={palette.isCustomTheme ? theme.accent : palette.text} wrap="truncate-start">
-              {repoName}
-            </Text>
-            {subPath ? (
-              <Text mono color={palette.muted} wrap="truncate-start">
-                {`/${subPath}`}
+        <Box flexDirection="column" rowGap={desktopStep('xs')}>
+          <Box flexDirection="row">
+            <Box flexDirection="row" flexShrink={1} overflow="hidden">
+              <Text mono bold color={palette.isCustomTheme ? theme.accent : palette.text} wrap="truncate-start">
+                {repoName}
               </Text>
-            ) : null}
+              {subPath ? (
+                <Text mono color={palette.muted} wrap="truncate-start">
+                  {`/${subPath}`}
+                </Text>
+              ) : null}
+            </Box>
+            <Box flexGrow={1} />
+            {hint(allButtons, widthOf(header)) ?? (isDesktop ? summary() : null)}
           </Box>
-          <Box flexGrow={1} />
-          {hint(allButtons, widthOf(header)) ?? (isDesktop ? summary() : null)}
+          {branchRow()}
+          {t.gitError ? (
+            <Text mono dimColor color={palette.muted} wrap="truncate-end">
+              {gitIcon + gitUnavailable(t.gitError)}
+            </Text>
+          ) : null}
+          {isGitHintShown && (
+            <Text mono color={palette.muted} wrap="truncate-end">
+              {gitIcon}Git status starts after git init
+            </Text>
+          )}
         </Box>
-        {branchRow()}
-        {t.gitError ? (
-          <Text mono dimColor color={palette.muted} wrap="truncate-end">
-            {gitIcon + gitUnavailable(t.gitError)}
-          </Text>
-        ) : null}
-        {isGitHintShown && (
-          <Text mono color={palette.muted} wrap="truncate-end">
-            {gitIcon}Git status starts after git init
-          </Text>
-        )}
         {isDesktop ? null : toolbar}
         {isDesktop ? (
-          <Box flexDirection="row" alignItems="center" columnGap={1}>
-            <Box flexDirection="column" flexGrow={1} minWidth={14}>
-              {searchInput}
+          // Search and the controls under it read as one zone, set apart from the header above
+          // and the tree below.
+          <Box flexDirection="column" marginTop="md" marginBottom="md" rowGap="sm">
+            <Box flexDirection="row" alignItems="center" columnGap={1}>
+              <Box flexDirection="column" flexGrow={1} minWidth={14}>
+                {searchInput}
+              </Box>
+              {clearSearch}
             </Box>
-            {clearSearch}
+            {desktopControls}
           </Box>
         ) : (
           <Box flexDirection="row">
@@ -2259,11 +2270,10 @@ export const register: Register = (on, options) => {
             {clearSearch}
           </Box>
         )}
-        {isDesktop ? desktopControls : null}
         {tree}
         {outsideGroup}
         <Box flexGrow={1} />
-        {isDesktop && hasFooter && divider(width)}
+        {isDesktop && hasFooter && <Box marginTop="md" marginBottom="xs">{divider(width)}</Box>}
         {hasFooter && (
           // On the desktop the activity wraps under the selection when both would be cramped.
           <Box flexDirection="row" {...(isDesktop ? { flexWrap: 'wrap' as const } : {})}>
